@@ -14,19 +14,19 @@ Recent advances in predicting 6D grasp poses from a single depth image have resu
 
 TARGO dataset adds single scenes in addition to cluttered scenes in VGN dataset.
 
-`python generate_targo_dataset.py --root <output dataset directory>`
+`python scripts/generate_targo_dataset.py --root <output dataset directory>`
 
 ### Shape Completion Dataset
 
 Training shape completion requires no additional dataset: simply read in VGN dataset, and generate the corresponding dataset for shape completion.
 
-`python generate_sc_dataset.py --root_mpl <VGN dataset's mesh pose list directory> --dest <h5 destination directory>`
+`python scripts/generate_sc_dataset.py --root_mpl <VGN dataset's mesh pose list directory> --dest <h5 destination directory>`
 
 ## Inference
 
 TARGO-Net predicts parallel-jaw gripper grasps.
 
-`python inference.py`
+`python scripts/inference.py`
 
 <!-- insert img, should fix paths -->
 
