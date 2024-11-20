@@ -28,9 +28,6 @@ Other notable packages include:
 - **Scipy**: 1.9.0  
 </details>
 
-Here's a refined version of your README:
-
----
 
 ### Dataset
 You can either **download our dataset** or **generate it yourself**. Please place the dataset in the `datasets` directory. A download link for the dataset will be provided later. Demo data is already available in `datasets/demo`.
@@ -75,12 +72,9 @@ python scripts/inference.py --net TARGO | giga | giga_aff | vgn | icgnet | edgeg
 
 <!-- Insert relevant images and ensure paths are fixed -->
 
----
 
 ## Acknowledgements
 This project builds upon ideas and codebases from [VGN](https://github.com/ethz-asl/vgn) and [GIGA](https://github.com/UT-Austin-RPL/GIGA). We express our gratitude to the authors for laying the groundwork and inspiring this work.
-
----
 
 <!-- ## Citation -->
 ### Citation
