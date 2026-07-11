@@ -1,7 +1,7 @@
 import yaml
 from torchvision import transforms
-from vgn.ConvONets import data
-from vgn.ConvONets import conv_onet
+from src.vgn.ConvONets import data
+from src.vgn.ConvONets import conv_onet
 
 
 method_dict = {

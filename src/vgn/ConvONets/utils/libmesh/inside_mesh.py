@@ -1,6 +1,6 @@
 import numpy as np
 from .triangle_hash import TriangleHash as _TriangleHash
-
+np.bool = bool
 
 def check_mesh_contains(mesh, points, hash_resolution=512):
     intersector = MeshIntersector(mesh, hash_resolution)
@@ -67,8 +67,8 @@ class MeshIntersector:
         # Check if point contained in mesh
         contains1 = (np.mod(nintersect0, 2) == 1)
         contains2 = (np.mod(nintersect1, 2) == 1)
-        # if (contains1 != contains2).any():
-        #     print('Warning: contains1 != contains2 for some points.')
+        if (contains1 != contains2).any():
+            print('Warning: contains1 != contains2 for some points.')
         contains[mask] = (contains1 & contains2)
         return contains
 
@@ -97,6 +97,7 @@ class MeshIntersector:
             t1_2[mask] * abs_n_2[mask] + alpha[mask] * s_n_2[mask]
 
         # Test the depth:
+        # TODO: remove and put into tests
         # points_new = np.concatenate([points[:, :2], depth_intersect[:, None]], axis=1)
         # alpha = (normals * t1).sum(-1)
         # mask = (depth_intersect == depth_intersect)

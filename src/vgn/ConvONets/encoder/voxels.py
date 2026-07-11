@@ -138,13 +138,10 @@ class LocalVoxelEncoder_without_3d(nn.Module):
     '''
 
     def __init__(self, dim=3, c_dim=128, unet=False, unet_kwargs=None, unet3d=False, unet3d_kwargs=None, in_channels_scale = 3,
-                 plane_resolution=512, grid_resolution=None, plane_type='xz', kernel_size=3, padding=0.1, fusion_type='MLP_fusion'):
+                 plane_resolution=512, grid_resolution=None, plane_type='xz', kernel_size=3, padding=0.1,):
         super().__init__()
         self.actvn = F.relu
-        # if fusion_type == 'transformer_concat':
-        if fusion_type in ("transformer_concat", "CNN_concat"):
-            # self.c_dim = c_dim * 2
-            c_dim = c_dim * 2
+        # c_dim = c_dim * 2
 
         if unet:
             self.unet = UNet(c_dim, in_channels=c_dim, **unet_kwargs)
@@ -158,23 +155,16 @@ class LocalVoxelEncoder_without_3d(nn.Module):
 
         self.c_dim = c_dim
     
-        # if fusion_type == 'transformer_concat':
-        #     self.c_dim = c_dim * 2
 
         self.reso_plane = plane_resolution
         self.reso_grid = grid_resolution
 
         self.plane_type = plane_type
         self.padding = padding
-        # self.conv_ds = nn.Conv1d(in_channels=self.c_dim * in_channels_scale, out_channels=self.c_dim, kernel_size=1, stride=1)
-        if fusion_type == 'MLP_fusion':
-            self.linear_ds = nn.Linear(in_features=self.c_dim * in_channels_scale, out_features=self.c_dim)
-        self.fusion_type = fusion_type
 
 
 
     def generate_plane_features(self, p, c, plane='xz'):
-        # acquire indices of features in plane
         xy = normalize_coordinate(p.clone(), plane=plane, padding=self.padding)
         index = coordinate2index(xy, self.reso_plane)
 
@@ -226,11 +216,6 @@ class LocalVoxelEncoder_without_3d(nn.Module):
         c = c.view(batch_size, c.shape[1], -1)
         # c = self.conv_ds(c)
         c = c.permute(0, 2, 1)
-        if self.fusion_type == 'MLP_fusion':
-            c = self.linear_ds(c)
-        # c = c.view(batch_size, self.c_dim, -1)
-        # c = self.conv_ds(c)
-        # c = c.permute(0, 2, 1)
 
         fea = {}
         if 'grid' in self.plane_type:

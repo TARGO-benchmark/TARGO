@@ -406,6 +406,7 @@ class Abstract3DUNet(nn.Module):
                 encoder = Encoder(in_channels, out_feature_num, apply_pooling=False, basic_module=basic_module,
                                   conv_layer_order=layer_order, num_groups=num_groups)
             else:
+                # TODO: adapt for anisotropy in the data, i.e. use proper pooling kernel to make the data isotropic after 1-2 pooling operations
                 # currently pools with a constant kernel: (2, 2, 2)
                 encoder = Encoder(f_maps[i - 1], out_feature_num, basic_module=basic_module,
                                   conv_layer_order=layer_order, num_groups=num_groups)
@@ -423,6 +424,7 @@ class Abstract3DUNet(nn.Module):
                 in_feature_num = reversed_f_maps[i]
 
             out_feature_num = reversed_f_maps[i + 1]
+            # TODO: if non-standard pooling was used, make sure to use correct striding for transpose conv
             # currently strides with a constant stride: (2, 2, 2)
             decoder = Decoder(in_feature_num, out_feature_num, basic_module=basic_module,
                               conv_layer_order=layer_order, num_groups=num_groups)

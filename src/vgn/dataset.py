@@ -2,9 +2,9 @@ import numpy as np
 from scipy import ndimage
 import torch.utils.data
 
-from vgn.io import *
-from vgn.perception import *
-from vgn.utils.transform import Rotation, Transform
+from src.vgn.io import *
+from src.vgn.perception import *
+from src.vgn.utils.transform import Rotation, Transform
 
 
 class Dataset(torch.utils.data.Dataset):

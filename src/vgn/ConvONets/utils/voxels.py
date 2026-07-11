@@ -3,10 +3,10 @@ import numpy as np
 import trimesh
 from scipy import ndimage
 from skimage.measure import block_reduce
-from vgn.ConvONets.utils.libvoxelize.voxelize import voxelize_mesh_
-from vgn.ConvONets.utils.libmesh import check_mesh_contains
-from vgn.ConvONets.common import make_3d_grid
-
+from src.vgn.ConvONets.utils.libvoxelize.voxelize import voxelize_mesh_
+from src.vgn.ConvONets.utils.libmesh import check_mesh_contains
+from src.vgn.ConvONets.common import make_3d_grid
+np.bool = bool
 
 class VoxelGrid:
     def __init__(self, data, loc=(0., 0., 0.), scale=1):
@@ -204,6 +204,7 @@ class VoxelGrid:
 
 def voxelize_ray(mesh, resolution):
     occ_surface = voxelize_surface(mesh, resolution)
+    # TODO: use surface voxels here?
     occ_interior = voxelize_interior(mesh, resolution)
     occ = (occ_interior | occ_surface)
     return occ

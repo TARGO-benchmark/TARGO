@@ -18,6 +18,157 @@ from vgn.utils.implicit import as_mesh
 #########
 cmap = plt.get_cmap('Reds')
 
+def affordance_visual_v3(qual_vol,
+                         rot_vol,
+                         scene_mesh,
+                         size=0.3,
+                         resolution=40,
+                         th=0.2,
+                         temp=150,
+                         rad=0.02,
+                         finger_depth=0.05,
+                         finger_offset=0.5,
+                         move_center=True,
+                         aggregation='max',
+                         cmap_name='hot'):
+    """
+    Render scene_mesh with per-triangle affordance heat-map.
+
+    Args
+    ----
+    qual_vol, rot_vol : np.ndarray
+        Voxelized quality scores & quaternions (shape = [res,res,res,…]).
+    scene_mesh        : trimesh.Trimesh
+    ...
+    cmap_name         : str
+        Any Matplotlib colormap name (e.g. 'hot', 'coolwarm', 'jet').
+    """
+    # --- 同 v2 ---
+    x = np.linspace(0, size, num=resolution)
+    y = np.linspace(0, size, num=resolution)
+    z = np.linspace(0, size, num=resolution)
+    X, Y, Z = np.meshgrid(x, y, z)
+    grid = np.stack((Y, X, Z), axis=-1)
+
+    if move_center:
+        z_axis = np.stack([
+            2 * rot_vol[..., 0] * rot_vol[..., 2] +
+            2 * rot_vol[..., 1] * rot_vol[..., 3],
+            2 * rot_vol[..., 1] * rot_vol[..., 2] -
+            2 * rot_vol[..., 0] * rot_vol[..., 3],
+            1 - 2 * rot_vol[..., 0] ** 2 - 2 * rot_vol[..., 1] ** 2
+        ], axis=-1)
+        grid += z_axis * finger_depth * finger_offset
+
+    mask_keep = qual_vol > th
+    if not mask_keep.any():
+        return scene_mesh  # nothing to show
+
+    grid       = grid[mask_keep]
+    qual_kept  = qual_vol[mask_keep]
+
+    pc_coord   = grid.reshape(-1, 3)
+    pc_q       = qual_kept.reshape(-1, 1)
+    qual_pc    = np.hstack((pc_coord, pc_q))
+
+    mesh       = scene_mesh.copy()
+    centers    = mesh.triangles_center[:, None, :]       # [F,1,3]
+    diffs      = centers - qual_pc[None, :, :3]          # [F,N,3]
+    dists      = np.linalg.norm(diffs, axis=-1)          # [F,N]
+
+    if aggregation == 'mean':
+        w = np.exp(-dists * temp)
+        affordance = (w @ qual_pc[:, 3]) / (w.sum(axis=1) + 1e-8)
+    elif aggregation == 'max':
+        affordance = (dists <= rad) * qual_pc[:, 3]
+        affordance = affordance.max(axis=1)
+    elif aggregation == 'softmax':
+        m = (dists <= rad)
+        a = m * qual_pc[:, 3] + (~m) * -1e10
+        w = np.exp(a * temp)
+        affordance = (w @ qual_pc[:, 3]) / (w.sum(axis=1) + 1e-8)
+
+    # --- 颜色（v3 改动处） ---------------------------------------------
+    affordance = np.clip(affordance, th, 1.0)
+    affordance = (affordance - th) / (1.0 - th)          # [0,1]
+
+    aff_norm   = affordance / (affordance.max() + 1e-8)  # 最高值 → 1
+    cmap       = plt.get_cmap(cmap_name)
+    colors     = cmap(aff_norm)                          # RGBA ∈ [0,1]
+    mesh.visual.face_colors = colors
+    # ---------------------------------------------------------------
+
+    return mesh
+
+def affordance_visual_v2(qual_vol,
+                        rot_vol,
+                        scene_mesh,
+                        size=0.3,
+                        resolution=40,
+                        th=0.005,
+                        temp=150,
+                        rad=0.02,
+                        finger_depth=0.05,
+                        finger_offset=0.5,
+                        move_center=True,
+                        aggregation='max'):
+    # Transform voxel grid into point cloud
+    x = np.linspace(0, size, num=resolution)
+    y = np.linspace(0, size, num=resolution)
+    z = np.linspace(0, size, num=resolution)
+    X, Y, Z = np.meshgrid(x, y, z)
+    grid = np.stack((Y, X, Z), axis=-1)
+
+    if move_center:
+        z_axis = np.stack([
+            2 * rot_vol[:, :, :, 0] * rot_vol[:, :, :, 2] +
+            2 * rot_vol[:, :, :, 1] * rot_vol[:, :, :, 3],
+            2 * rot_vol[:, :, :, 1] * rot_vol[:, :, :, 2] -
+            2 * rot_vol[:, :, :, 0] * rot_vol[:, :, :, 3],
+            1 - 2 * rot_vol[:, :, :, 0] * rot_vol[:, :, :, 0] -
+            2 * rot_vol[:, :, :, 1] * rot_vol[:, :, :, 1]
+        ], axis=-1)
+        grid += z_axis * finger_depth * finger_offset
+
+    grid = grid[qual_vol > th]
+    if grid.shape[0] <= 0:
+        return scene_mesh
+    qual_vol = qual_vol[qual_vol > th]
+    pc_coordinate = np.reshape(grid, (-1, 3))
+    pc_vector = np.expand_dims(np.reshape(qual_vol, (-1, )), axis=1)
+    qual_pc = np.concatenate((pc_coordinate, pc_vector), axis=1)
+
+    mesh = scene_mesh.copy()
+    triangles_center = mesh.triangles_center
+    centers = np.reshape(triangles_center, (triangles_center.shape[0], 1, 3))
+    qual_pc_coords = np.reshape(qual_pc[:, 0:3], (1, -1, 3))
+    diff = centers - qual_pc_coords
+    dist = np.sqrt((diff**2).sum(axis=-1))
+
+    if aggregation == 'mean':
+        weight = np.exp(-dist * temp)
+        affordance = weight.dot(qual_pc[:, 3]) / weight.sum(axis=-1)
+    elif aggregation == 'max':
+        mask = dist <= rad
+        affordance = mask * qual_pc[:, 3][np.newaxis]
+        affordance = affordance.max(axis=1)
+    elif aggregation == 'softmax':
+        mask = dist <= rad
+        affordance_mask = mask * qual_pc[:, 3][np.newaxis]
+        affordance_mask[np.logical_not(mask)] = -1e10
+        weight = np.exp(affordance_mask * temp)
+        affordance = weight.dot(qual_pc[:, 3]) / (weight.sum(axis=-1) + 1e-5)
+
+    affordance = np.clip(affordance, a_min=th, a_max=1)
+    affordance = (affordance - th) / (1 - th)
+
+    # 🔴 Colormap and nonlinear transformation
+    cmap = plt.get_cmap('hot')  # Use warm color map
+    colors = cmap(np.power(affordance, grid.max()))  # Enhance contrast for low values
+
+    mesh.visual.face_colors = colors
+    return mesh
+
 
 def affordance_visual(qual_vol,
                       rot_vol,
@@ -25,6 +176,7 @@ def affordance_visual(qual_vol,
                       size=0.3,
                       resolution=40,
                       th=0.5,
+                    #   th=0.1,
                       temp=150,
                       rad=0.02,
                       finger_depth=0.05,
@@ -96,6 +248,43 @@ def affordance_visual(qual_vol,
     colors = cmap(affordance ** 4)
     mesh.visual.face_colors = colors
     return mesh
+
+def grasp2mesh_no_score(grasp, finger_depth=0.05):
+    # Fixed color (green with transparency)
+    color = np.array([0, 250, 0, 180]).astype(np.uint8)
+    radius = 0.1 * finger_depth
+    w, d = grasp.width, finger_depth
+    scene = trimesh.Scene()
+
+    # Left finger
+    pose = grasp.pose * Transform(Rotation.identity(), [0.0, -w / 2, d / 2])
+    left_finger = trimesh.creation.cylinder(radius, d, transform=pose.as_matrix())
+    scene.add_geometry(left_finger, 'left_finger')
+
+    # Right finger
+    pose = grasp.pose * Transform(Rotation.identity(), [0.0, w / 2, d / 2])
+    right_finger = trimesh.creation.cylinder(radius, d, transform=pose.as_matrix())
+    scene.add_geometry(right_finger, 'right_finger')
+
+    # Wrist
+    pose = grasp.pose * Transform(Rotation.identity(), [0.0, 0.0, -d / 4])
+    wrist = trimesh.creation.cylinder(radius, d / 2, transform=pose.as_matrix())
+    scene.add_geometry(wrist, 'wrist')
+
+    # Palm
+    pose = grasp.pose * Transform(
+        Rotation.from_rotvec(np.pi / 2 * np.r_[1.0, 0.0, 0.0]), [0.0, 0.0, 0.0])
+    palm = trimesh.creation.cylinder(radius, w, transform=pose.as_matrix())
+    scene.add_geometry(palm, 'palm')
+
+    # Combine the geometries into a single mesh
+    scene = as_mesh(scene)
+
+    # Apply the fixed color to all faces
+    colors = np.repeat(color[np.newaxis, :], len(scene.faces), axis=0)
+    scene.visual.face_colors = colors
+
+    return scene
 
 
 def grasp2mesh(grasp, score, finger_depth=0.05):
@@ -354,3 +543,99 @@ def convert_voxel_to_cloud(voxel, size):
                     ])
 
     return np.array(points)
+
+def vis_grasps_target_vgn(grasps, scores, target_cloud, scene_cloud, output_prefix=None, top_k=None):
+    """
+    Visualize VGN grasps with target and scene point clouds, and save as files
+    
+    Args:
+        grasps: List of VGN Grasp objects
+        scores: List of grasp scores
+        target_cloud: Target object point cloud (o3d.geometry.PointCloud)
+        scene_cloud: Scene point cloud (o3d.geometry.PointCloud)
+        output_prefix: Optional prefix for output files
+        top_k: Number of top grasps to visualize, if None visualize all grasps
+    """
+    import trimesh
+    import open3d as o3d
+    import numpy as np
+    
+    # Limit to top k grasps if specified
+    if top_k is not None and len(grasps) > top_k:
+        top_indices = np.argsort(scores)[-top_k:][::-1]  # Sort by score and take top k
+        grasps = [grasps[i] for i in top_indices]
+        scores = [scores[i] for i in top_indices]
+        print(f"Visualizing top {top_k} grasps out of {len(scores)} total grasps")
+    else:
+        print(f"Visualizing all {len(grasps)} grasps")
+    
+    # Create colored point clouds
+    # Set target cloud to red color
+    target_cloud_colored = o3d.geometry.PointCloud()
+    target_cloud_colored.points = target_cloud.points
+    target_cloud_colored.colors = o3d.utility.Vector3dVector(np.ones((len(target_cloud.points), 3)) * np.array([1, 0, 0]))  # Red color
+    
+    # Set scene cloud to green color
+    scene_cloud_colored = o3d.geometry.PointCloud()
+    scene_cloud_colored.points = scene_cloud.points
+    scene_cloud_colored.colors = o3d.utility.Vector3dVector(np.ones((len(scene_cloud.points), 3)) * np.array([0, 1, 0]))  # Green color
+    
+    # Print statistics for debugging
+    target_points = np.asarray(target_cloud.points)
+    scene_points = np.asarray(scene_cloud.points)
+    print(f"Scene points: {len(scene_points)}, Target points: {len(target_points)}")
+    
+    # Determine output file names based on prefix
+    if output_prefix is None:
+        # If no output prefix provided, use default
+        prefix = 'demo/vgn_cloud'
+    else:
+        # Use the provided output prefix
+        prefix = output_prefix
+    
+    # Save the colored point clouds to PLY files
+    o3d.io.write_point_cloud(f'{prefix}_target.ply', target_cloud_colored)
+    o3d.io.write_point_cloud(f'{prefix}_scene.ply', scene_cloud_colored)
+    print(f'Target point cloud saved to {prefix}_target.ply')
+    print(f'Scene point cloud saved to {prefix}_scene.ply')
+    
+    # Convert point clouds to trimesh
+    target_points = np.asarray(target_cloud_colored.points)
+    target_colors = np.asarray(target_cloud_colored.colors)
+    target_mesh = trimesh.points.PointCloud(target_points, colors=target_colors)
+    
+    scene_points = np.asarray(scene_cloud_colored.points)
+    scene_colors = np.asarray(scene_cloud_colored.colors)
+    scene_mesh = trimesh.points.PointCloud(scene_points, colors=scene_colors)
+    
+    # Create a scene and add both point clouds
+    scene = trimesh.Scene()
+    scene.add_geometry(target_mesh)
+    scene.add_geometry(scene_mesh)
+    
+    # Add all grasps to the scene
+    for i, (grasp, score) in enumerate(zip(grasps, scores)):
+        # Convert grasp to mesh
+        if i == 0:
+            # Best grasp is green
+            color = np.array([0, 250, 0, 180]).astype(np.uint8)
+        else:
+            # Other grasps are yellow
+            color = np.array([250, 250, 0, 180]).astype(np.uint8)
+        
+        # Create grasp mesh
+        grasp_mesh = grasp2mesh(grasp, score)
+        
+        # Override colors based on rank
+        colors = np.repeat(color[np.newaxis, :], len(grasp_mesh.faces), axis=0)
+        grasp_mesh.visual.face_colors = colors
+        
+        # Add to scene
+        scene.add_geometry(grasp_mesh)
+    
+    # Export the scene
+    output_file = f'{prefix}_with_grasps_vgn.glb'
+    scene.export(output_file)
+    print(f'Scene saved to {output_file}')
+    
+    return scene

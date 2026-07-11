@@ -1,7 +1,7 @@
 import pickle
 import pybullet
 import numpy as np
-from vgn.utils.transform import Rotation, Transform
+from src.vgn.utils.transform import Rotation, Transform
 
 def get_mesh_pose_dict_from_world(world,
                                   physicsClientId=0,

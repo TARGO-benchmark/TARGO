@@ -1,0 +1,17 @@
+059_chain
+071_nine_hole_peg_test
+026_sponge
+040_large_marker
+022_windex_bottle
+024_bowl
+036_wood_block
+028_skillet_lid
+038_padlock
+007_tuna_fish_can
+002_master_chef_can
+032_knife
+033_spatula
+051_large_clamp
+029_plate
+042_adjustable_wrench
+035_power_drill 

@@ -4,11 +4,11 @@ from torch import autograd
 import numpy as np
 from tqdm import trange, tqdm
 import trimesh
-from vgn.ConvONets.common import make_3d_grid, normalize_coord, add_key, coord2index
+from src.vgn.ConvONets.common import make_3d_grid, normalize_coord, add_key, coord2index
 try:
-    from vgn.ConvONets.utils import libmcubes
-    from vgn.ConvONets.utils.libsimplify import simplify_mesh
-    from vgn.ConvONets.utils.libmise import MISE
+    from src.vgn.ConvONets.utils import libmcubes
+    from src.vgn.ConvONets.utils.libsimplify import simplify_mesh
+    from src.vgn.ConvONets.utils.libmise import MISE
 except:
     print('import utils failed')
 import time
@@ -413,6 +413,7 @@ class Generator3D(object):
         if vertices.shape[0] == 0:
             return mesh
 
+        # TODO: normals are lost here
         if self.simplify_nfaces is not None:
             t0 = time.time()
             mesh = simplify_mesh(mesh, self.simplify_nfaces, 5.)

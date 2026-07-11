@@ -1,4 +1,7 @@
 import os
+# Set EGL platform for headless OpenGL rendering (must be before pybullet import)
+os.environ["PYOPENGL_PLATFORM"] = "egl"
+
 import time
 import pickle
 import numpy as np
@@ -20,11 +23,32 @@ class BtWorld(object):
         sim_time: Virtual time elpased since the last simulation reset.
     """
 
-    def __init__(self, gui=True, save_dir=None, save_freq=8):
-        connection_mode = pybullet.GUI if gui else pybullet.DIRECT
-        self.p = bullet_client.BulletClient(connection_mode)
+    def __init__(self, gui=True, save_dir=None, save_freq=8, egl_mode=False):
+        # Force EGL mode for headless rendering when gui=False
+        if not gui:
+            egl_mode = True
+            
+        if egl_mode or not gui:
+            # Use EGL for headless OpenGL rendering (same quality as GUI)
+            self.p = bullet_client.BulletClient(pybullet.DIRECT)
+            
+            # Load EGL renderer plugin for hardware-accelerated rendering
+            plugin_status = self.p.loadPlugin("eglRendererPlugin")
+            if plugin_status >= 0:
+                print("✓ EGL renderer plugin loaded successfully - headless OpenGL rendering enabled")
+                self.use_hardware_renderer = True
+            else:
+                print("⚠ Warning: EGL renderer plugin failed to load, falling back to software renderer")
+                print("  This will result in poor video quality with black background")
+                self.use_hardware_renderer = False
+        else:
+            # Original GUI mode
+            connection_mode = pybullet.GUI if gui else pybullet.DIRECT
+            self.p = bullet_client.BulletClient(connection_mode)
+            self.use_hardware_renderer = gui  # GUI mode uses hardware rendering
 
         self.gui = gui
+        self.egl_mode = egl_mode
         self.dt = 1.0 / 240.0
         self.solver_iterations = 150
         self.save_dir = save_dir
@@ -51,7 +75,7 @@ class BtWorld(object):
         return constraint
 
     def add_camera(self, intrinsic, near, far):
-        camera = Camera(self.p, intrinsic, near, far)
+        camera = Camera(self.p, intrinsic, near, far, use_hardware_renderer=self.use_hardware_renderer)
         return camera
     
     def get_contacts_valid(self, bodyA, tgt_id):
@@ -122,6 +146,149 @@ class BtWorld(object):
 
     def close(self):
         self.p.disconnect()
+
+    def start_video_recording(self, filename, video_path):
+        """Start video recording using OpenCV for manual video capture"""
+        import cv2
+        import numpy as np
+        
+        os.makedirs(video_path, exist_ok=True)
+        video_file = os.path.join(video_path, f"{filename}.mp4")
+        
+        # Reduce video resolution to improve performance
+        self.width, self.height = 640, 480  # Lower resolution
+        self.frames = []
+        self.video_file = video_file
+        self.recording = True
+        self.frame_count = 0  # Frame counter for skipping frames
+        self.capture_interval = 3  # Capture every nth frame
+        
+        print(f"Starting OpenCV video recording: {video_file} (optimized mode)")
+        return 1  # Return virtual ID
+    
+    def capture_frame(self):
+        """Capture frames during simulation steps, using frame intervals to reduce capture frequency"""
+        if not hasattr(self, 'recording') or not self.recording:
+            return
+        
+        # Use interval sampling to reduce frame count    
+        self.frame_count += 1
+        if self.frame_count % self.capture_interval != 0:
+            return
+            
+        # Set camera view
+        viewMatrix = self.p.computeViewMatrix(
+            cameraEyePosition=[0.5, -0.2, 0.5],
+            cameraTargetPosition=[0.15, 0.15, 0.15],
+            cameraUpVector=[0, 0, 1]
+        )
+        projectionMatrix = self.p.computeProjectionMatrixFOV(
+            fov=60, aspect=self.width/self.height, nearVal=0.1, farVal=100
+        )
+        
+        # Choose renderer based on hardware availability
+        if self.use_hardware_renderer:
+            # Use OpenGL hardware renderer for high-quality rendering (same as GUI)
+            renderer = self.p.ER_BULLET_HARDWARE_OPENGL
+            # Only print renderer info every 100 frames to reduce output spam
+            if self.frame_count % 100 == 1:
+                print(f"📹 Frame {self.frame_count}: Using OpenGL hardware renderer")
+        else:
+            # Fall back to software renderer
+            renderer = self.p.ER_TINY_RENDERER
+            # Only print renderer info every 100 frames to reduce output spam
+            if self.frame_count % 100 == 1:
+                print(f"📹 Frame {self.frame_count}: Using software renderer")
+        
+        # Get image with selected renderer
+        img = self.p.getCameraImage(
+            self.width, self.height, viewMatrix, projectionMatrix,
+            renderer=renderer
+        )
+        
+        # Save image
+        import numpy as np
+        rgb_array = np.array(img[2], dtype=np.uint8).reshape(self.height, self.width, 4)
+        rgb_array = rgb_array[:, :, :3]  # Remove alpha channel
+        self.frames.append(rgb_array)
+    
+    def stop_video_recording(self, log_id):
+        """End video recording and generate video file using more efficient encoder"""
+        if not hasattr(self, 'recording') or not self.recording:
+            print("❌ No active recording in progress")
+            return
+            
+        print(f"🎬 Stopping video recording...")
+        print(f"📊 Total frames captured: {len(self.frames)}")
+        print(f"📁 Video file path: {self.video_file}")
+        
+        import cv2
+        
+        if len(self.frames) == 0:
+            print("⚠️ Warning: No frames captured, video is empty")
+            return
+            
+        # Create video - using H.264 encoding
+        try:
+            # First try using H.264 encoder
+            fourcc = cv2.VideoWriter_fourcc(*'H264')
+            out = cv2.VideoWriter(self.video_file, fourcc, 30, (self.width, self.height))
+            
+            # Test if video writer is working properly
+            if not out.isOpened():
+                raise Exception("H264 encoder not available")
+                
+            print("✓ Using H.264 encoder")
+                
+        except Exception as e:
+            print(f"⚠️ H264 encoder not available: {e}, trying MP4V...")
+            # Fall back to MP4V encoder
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(self.video_file, fourcc, 30, (self.width, self.height))
+            
+            if not out.isOpened():
+                print("❌ Error: Could not open video writer")
+                return
+                
+            print("✓ Using MP4V encoder")
+        
+        # Reduce frame count to speed up processing
+        total_frames = len(self.frames)
+        if total_frames > 150:  # If too many frames, reduce further
+            step = max(1, total_frames // 150)
+            print(f"🔄 Too many frames ({total_frames}), reducing to ~150 frames with step {step}")
+            selected_frames = self.frames[::step]
+        else:
+            selected_frames = self.frames
+            
+        print(f"🎞️ Processing {len(selected_frames)} frames...")
+        
+        # Write frames to video
+        frame_count = 0
+        for frame in selected_frames:
+            bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            out.write(bgr_frame)
+            frame_count += 1
+            
+            # Progress indicator every 50 frames
+            if frame_count % 50 == 0:
+                print(f"  Processed {frame_count}/{len(selected_frames)} frames...")
+        
+        out.release()
+        self.recording = False
+        self.frames = []
+        
+        # Verify video file was created
+        import os
+        if os.path.exists(self.video_file):
+            file_size = os.path.getsize(self.video_file)
+            print(f"✅ Video recording completed successfully!")
+            print(f"📁 File: {self.video_file}")
+            print(f"📏 Size: {file_size} bytes")
+        else:
+            print(f"❌ Error: Video file was not created at {self.video_file}")
+        
+        return self.video_file
 
 
 class Body(object):
@@ -313,15 +480,15 @@ class Camera(object):
         intrinsic: The camera intrinsic parameters.
     """
 
-    def __init__(self, physics_client, intrinsic, near, far):
+    def __init__(self, physics_client, intrinsic, near, far, use_hardware_renderer=True):
         self.intrinsic = intrinsic
         self.near = near
         self.far = far
         self.proj_matrix = _build_projection_matrix(intrinsic, near, far)
         self.p = physics_client
-        
+        self.use_hardware_renderer = use_hardware_renderer
 
-    def render_with_seg(self, extrinsic):
+    def render(self, extrinsic):
         """Render synthetic RGB and depth images.
 
         Args:
@@ -333,26 +500,29 @@ class Camera(object):
         gl_view_matrix = gl_view_matrix.flatten(order="F")
         gl_proj_matrix = self.proj_matrix.flatten(order="F")
 
+        # Choose renderer based on hardware availability
+        renderer = pybullet.ER_BULLET_HARDWARE_OPENGL if self.use_hardware_renderer else pybullet.ER_TINY_RENDERER
+
         result = self.p.getCameraImage(
             width=self.intrinsic.width,
             height=self.intrinsic.height,
             viewMatrix=gl_view_matrix,
             projectionMatrix=gl_proj_matrix,
-            renderer=pybullet.ER_TINY_RENDERER,
+            renderer=renderer,
         )
 
         rgb, z_buffer = result[2][:, :, :3], result[3]
-        seg = result[4]
         depth = (
             1.0 * self.far * self.near / (self.far - (self.far - self.near) * z_buffer)
         )
-        return rgb, depth, seg
-    
-    def render_qseg(self, extrinsic, segmentation=False):
+        return rgb, depth
+
+    def render_with_seg(self, extrinsic, segmentation=True):
         """Render synthetic RGB and depth images.
 
         Args:
             extrinsic: Extrinsic parameters, T_cam_ref.
+            segmentation: Boolean flag indicating if segmentation mask is required.
         """
         # Construct OpenGL compatible view and projection matrices.
         gl_view_matrix = extrinsic.as_matrix()
@@ -360,6 +530,9 @@ class Camera(object):
         gl_view_matrix = gl_view_matrix.flatten(order="F")
         gl_proj_matrix = self.proj_matrix.flatten(order="F")
 
+        # Choose renderer based on hardware availability
+        # renderer = pybullet.ER_BULLET_HARDWARE_OPENGL if self.use_hardware_renderer else pybullet.ER_TINY_RENDERER
+
         result = self.p.getCameraImage(
             width=self.intrinsic.width,
             height=self.intrinsic.height,
@@ -367,17 +540,24 @@ class Camera(object):
             projectionMatrix=gl_proj_matrix,
             renderer=pybullet.ER_TINY_RENDERER,
         )
+        w, h, rgba, depth, seg = result
+        rgba = np.array(rgba, dtype=np.uint8).reshape(h, w, 4)
+        rgb = rgba[..., :3]
+        depth = np.array(depth, dtype=np.float32)
+        seg = np.array(seg, dtype=np.uint8).reshape(h, w)
 
-        rgb, z_buffer = result[2][:, :, :3], result[3]
+        # rgb, z_buffer = result[2][:, :, :3], result[3]
         depth = (
-            1.0 * self.far * self.near / (self.far - (self.far - self.near) * z_buffer)
+            1.0 * self.far * self.near / (self.far - (self.far - self.near) * depth)
         )
 
-        seg = None
+        # seg = None
         if segmentation:
-            seg = result[4]
+            # seg = result[4]
+            seg = seg
+        else:
+            seg = None
         return rgb, depth, seg
-    
     
 
     def render(self, extrinsic):

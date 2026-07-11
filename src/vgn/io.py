@@ -3,7 +3,7 @@ import uuid
 
 import numpy as np
 import pandas as pd
-
+from pathlib import Path
 from vgn.grasp import Grasp
 from vgn.perception import *
 from vgn.utils.transform import Rotation, Transform
@@ -102,21 +102,21 @@ def write_full_sensor_data(root, scene_id, depth_imgs, extrinsics, segmentation)
     return scene_id
 
 def read_set_theory_sensor_data(root, scene_id):
-    data = np.load(root / "scenes" / (scene_id + ".npz"))
-    return data["depth_imgs.npy"], data["extrinsics.npy"], data['mask_targ.npy'], data['occ_targ.npy']
+    data = np.load(root / "scenes" / (scene_id + ".npz"), allow_pickle=True)
+    return data["depth_imgs"], data["extrinsics"], data["mask_targ"]
 
 
 def read_set_theory_occluder_sensor_data(root, scene_id):
-    data = np.load(root / "scenes" / (scene_id + ".npz"))
-    return data["depth_imgs.npy"], data["extrinsics.npy"], data['mask_targ.npy'], data['mask_occ.npy'], data['occ_targ.npy']
+    data = np.load(root / "scenes" / (scene_id + ".npz"), allow_pickle=True)
+    return data["depth_imgs"], data["extrinsics"], data["mask_targ"], data["mask_occ"]
 
 def read_sensor_data(root, scene_id):
-    data = np.load(root / "scenes" / (scene_id + ".npz"))
+    data = np.load(root / "scenes" / (scene_id + ".npz"), allow_pickle=True)
     return data["depth_imgs"], data["extrinsics"]
 
 def read_full_sensor_data(root, scene_id):
-    data = np.load(root / "full_scenes" / (scene_id + ".npz"))
-    return data["depth_imgs"], data["extrinsics"]
+    data = np.load(root / "full_scenes" / (scene_id + ".npz"), allow_pickle=True)
+    return data["depth_imgs"], data["extrinsics"], data["segmentation"]
 
 
 def write_grasp(root, scene_id, grasp, label):
@@ -207,11 +207,7 @@ def write_test_set_point_cloud(root, scene_id, point_cloud, name="test_set"):
 
 def read_voxel_grid(root, scene_id):
     path = root / "scenes" / (scene_id + ".npz")
-    return np.load(path)["grid"]
-
-def read_voxel_grid(root, scene_id):
-    path = root / "scenes" / (scene_id + ".npz")
-    return np.load(path)["grid"]
+    return np.load(path, allow_pickle=True)["grid"]
 
 def read_targ_depth_pc(root, scene_id):
     # path = root / "point_clouds" / (scene_id + ".npz")
@@ -234,15 +230,36 @@ def read_scene_depth_pc(root, scene_id):
     scene_pc = np.load(path, allow_pickle=True)["pc_depth_scene"]
     return scene_pc
 
-def read_targ_pc(root, scene_id):
-    # path = root / "point_clouds" / (scene_id + ".npz")
-    path = root / "scenes" / (scene_id + ".npz")
-    # targ_pc = np.load(path)["targ_pc"]
-    # targ_pc = np.load(path)["targ_pc.npy"]
-    # targ_pc = np.load(path, allow_pickle=True)["targ_pc"]
-    targ_pc = np.load(path, allow_pickle=True)["pc_targ"]
+# def read_targ_pc(root, scene_id):
+#     # path = root / "point_clouds" / (scene_id + ".npz")
+#     path = root / "scenes" / (scene_id + ".npz")
+#     # targ_pc = np.load(path)["targ_pc"]
+#     # targ_pc = np.load(path)["targ_pc.npy"]
+#     # targ_pc = np.load(path, allow_pickle=True)["targ_pc"]
+#     ## assert when no pc_targ
+#     assert 'pc_targ' in np.load(path, allow_pickle=True), f"No pc_targ found in {scene_id}.npz"
+#     targ_pc = np.load(path, allow_pickle=True)["pc_targ"]
 
-    return targ_pc
+#     return targ_pc
+
+def read_targ_pc(root, scene_id):
+    """
+    Try to read 'pc_targ' from <root>/scenes/<scene_id>.npz.
+    If not found, append scene_id to invalid_scene_id.txt and return None.
+    """
+    from pathlib import Path
+
+    path = Path(root) / "scenes" / f"{scene_id}.npz"
+    invalid_file = "./scripts/invalid_scene_id.txt"
+
+    try:
+        with np.load(path, allow_pickle=True) as data:
+            return data["pc_targ"]
+    except (FileNotFoundError, KeyError):
+        # Append scene_id to invalid_scene_id.txt (create if not exists)
+        with open(invalid_file, "a", encoding="utf-8") as f:
+            f.write(f"{scene_id}\n")
+        return None
 
 def read_scene_no_targ_pc(root, scene_id):
     # path = root / "point_clouds" / (scene_id + ".npz")
@@ -251,8 +268,58 @@ def read_scene_no_targ_pc(root, scene_id):
     path = root / "scenes" / (scene_id + ".npz")
     # targ_pc = np.load(path)["targ_pc.npy"]
     # scene_pc = np.load(path, allow_pickle=True)["scene_pc"]
-    scene_no_targ_pc = np.load(path, allow_pickle=True)["pc_scene_no_targ"]
-    return scene_no_targ_pc
+    
+    try:
+        data = np.load(path, allow_pickle=True)
+        
+        # For clutter scenes (_c_), use pc_scene_no_targ
+        if '_c_' in scene_id:
+            if 'pc_scene_no_targ' in data:
+                scene_no_targ_pc = data["pc_scene_no_targ"]
+            else:
+                # Fallback: use pc_depth_scene_no_targ if available
+                if 'pc_depth_scene_no_targ' in data:
+                    scene_no_targ_pc = data["pc_depth_scene_no_targ"]
+                else:
+                    available_keys = list(data.keys())
+                    data.close()
+                    raise KeyError(f"Neither 'pc_scene_no_targ' nor 'pc_depth_scene_no_targ' found in clutter scene {scene_id}.npz. Available keys: {available_keys}")
+        
+        # For single scenes (_s_), use pc_scene (since there's no "scene without target" concept)
+        elif '_s_' in scene_id:
+            if 'pc_scene' in data:
+                scene_no_targ_pc = data["pc_scene"]
+            else:
+                # Fallback: use pc_depth_scene if available
+                if 'pc_depth_scene' in data:
+                    scene_no_targ_pc = data["pc_depth_scene"]
+                else:
+                    available_keys = list(data.keys())
+                    data.close()
+                    raise KeyError(f"Neither 'pc_scene' nor 'pc_depth_scene' found in single scene {scene_id}.npz. Available keys: {available_keys}")
+        
+        # For other scene types, try pc_scene_no_targ first
+        else:
+            if 'pc_scene_no_targ' in data:
+                scene_no_targ_pc = data["pc_scene_no_targ"]
+            elif 'pc_scene' in data:
+                scene_no_targ_pc = data["pc_scene"]
+            else:
+                available_keys = list(data.keys())
+                data.close()
+                raise KeyError(f"No suitable scene point cloud found in {scene_id}.npz. Available keys: {available_keys}")
+        
+        data.close()
+        return scene_no_targ_pc
+        
+    except Exception as e:
+        print(f"Error loading scene {scene_id} from {path}: {e}")
+        # Check if file exists
+        if not path.exists():
+            print(f"File does not exist: {path}")
+        else:
+            print(f"File exists but cannot be loaded properly")
+        raise
 
 def read_scene_pc(root, scene_id):
     # path = root / "point_clouds" / (scene_id + ".npz")
@@ -283,9 +350,30 @@ def read_voxel_and_mask_occluder(root, scene_id):
     # mask_targ =  np.load(path)["targ_mask"]
     # mask_occ = np.load(path)["occ_mask"]
     # return depth_img, mask_targ, mask_occ
-    grid_scene = np.load(path)["grid_scene"]
-    grid_targ = np.load(path)["grid_targ"]
-    return grid_scene, grid_targ
+    try:
+        data = np.load(path, allow_pickle=True)
+        
+        # Check if required keys exist
+        if "grid_scene" not in data:
+            available_keys = list(data.keys())
+            print(f"Warning: Skipping {scene_id}.npz - 'grid_scene' not found. Available keys: {available_keys}")
+            data.close()
+            return None, None
+        
+        if "grid_targ" not in data:
+            available_keys = list(data.keys())
+            print(f"Warning: Skipping {scene_id}.npz - 'grid_targ' not found. Available keys: {available_keys}")
+            data.close()
+            return None, None
+        
+        grid_scene = data["grid_scene"]
+        grid_targ = data["grid_targ"]
+        data.close()
+        return grid_scene, grid_targ
+        
+    except Exception as e:
+        print(f"Warning: Error loading {scene_id}.npz - {e}")
+        return None, None
 
 def read_depth_mask(root, scene_id):
     path = root / "scenes" / (scene_id + ".npz")
@@ -330,3 +418,40 @@ def append_csv(path, *args):
     with path.open("a") as f:
         f.write(row)
         f.write("\n")
+
+def read_complete_target_pc(root, scene_id):
+    """Read complete target point cloud from preprocessed data."""
+    path = root / "scenes" / (scene_id + ".npz")
+    try:
+        data = np.load(path, allow_pickle=True)
+        if 'complete_target_pc' in data:
+            return data['complete_target_pc']
+        else:
+            return None
+    except:
+        return None
+
+def read_complete_target_mesh(root, scene_id):
+    """Read complete target mesh from preprocessed data."""
+    path = root / "scenes" / (scene_id + ".npz")
+    try:
+        data = np.load(path, allow_pickle=True)
+        if 'complete_target_mesh_vertices' in data and 'complete_target_mesh_faces' in data:
+            import trimesh
+            vertices = data['complete_target_mesh_vertices']
+            faces = data['complete_target_mesh_faces']
+            mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+            return mesh
+        else:
+            return None
+    except:
+        return None
+
+def check_complete_target_available(root, scene_id):
+    """Check if complete target data is available for a scene."""
+    path = root / "scenes" / (scene_id + ".npz")
+    try:
+        data = np.load(path, allow_pickle=True)
+        return 'complete_target_pc' in data
+    except:
+        return False

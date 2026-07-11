@@ -22,8 +22,6 @@ def apply_noise(img, noise_type):
         return apply_translational_noise(img)
     elif noise_type == 'norm':
         return apply_gaussian_noise(img)
-    elif noise_type == 'norm_0.005':
-        return apply_gaussian_noise(img, sigma=0.005)
     else:
         return img
 
@@ -66,7 +64,6 @@ def apply_translational_noise(img,
     new_img += np.random.randn(*new_img.shape) * sigma_d
     return new_img
 
-# def apply_gaussian_noise(img, sigma=0.005):
-def apply_gaussian_noise(img, sigma=0.002):
+def apply_gaussian_noise(img, sigma=0.005):
     img += np.random.randn(*img.shape) * sigma
     return img

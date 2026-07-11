@@ -1,6 +1,5 @@
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
-# from sckit-learn.neighbors import NearestNeighbors
 
 
 def best_fit_transform(A, B):

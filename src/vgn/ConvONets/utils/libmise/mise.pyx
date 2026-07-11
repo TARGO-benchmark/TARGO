@@ -193,6 +193,7 @@ cdef class MISE:
         next_to_negative.resize(self.voxels.size(), False)
     
         # Iterate over grid points and mark voxels active
+        # TODO: can move this to update operation and add attibute to voxel
         for grid_point in self.grid_points:
             loc = grid_point.loc
             if not grid_point.known:

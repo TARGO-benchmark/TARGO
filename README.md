@@ -2,83 +2,177 @@
 
 [Yan Xia](https://yan-xia.github.io)\*, [Ran Ding](https://randing2000.github.io)\*, [Ziyuan Qin](https://scholar.google.com/citations?user=pcCR2lUAAAAJ)\*, [Guanqi Zhan](https://www.robots.ox.ac.uk/~guanqi), [Kaichen Zhou](https://www.cs.ox.ac.uk/people/kaichen.zhou), [Long Yang](https://scholar.google.com/citations?user=KOTg0mQAAAAJ&hl), [Hao Dong](https://zsdonghao.github.io), [Daniel Cremers](https://cvg.cit.tum.de/members/cremers)
 
-## Introduction
+Accepted at IJCV 2026.
 
-Recent advances in predicting 6D grasp poses from a single depth image have resulted in a promising performance in robotic grasping. However, previous grasping models face challenges in cluttered environments where nearby objects impact the target object’s grasp. In this paper, we first set up a new benchmark dataset for TARget-driven Grasping under Occlusions, named TARGO. We make the following contributions: 1) We are the first to study the occlusion level of grasping. 2) We set up an evaluation benchmark consisting of large-scale synthetic data and part of real-world data, and we evaluated five grasp models and found that even the current SOTA model suffers when the occlusion level increases, which makes grasping under occlusion still a challenge. 3) We also generate a large-scale training dataset via a scalable pipeline, which can be used to boost the performance of grasping under occlusion and zero-shot generate to the real world. 4) We further propose a transformer-based model involving a shape completion module, termed TARGO-Net, which performs most robustly as occlusion increases.
+This repository contains the clean training and inference code for TARGO and TARGO-Net.
 
-<!-- ## Installation -->
-## Getting started
-### Environment Setup
-<details>
-<summary>Pytorch 1.12.1, Cuda 11.3</summary>
+- `train_targo.py`: train the original TARGO model.
+- `inference_targo.py`: run TARGO inference on the VGN evaluation set.
 
-The environment `targo` is set up with the following key configurations:
+The import dependencies used by those scripts are kept under `src/`, `setup/`, and `serialization/`.
 
-- **Python version**: 3.9.20  
-- **PyTorch version**: 1.12.1+cu113  
-- **Torchvision version**: 0.13.1+cu113  
-- **Torchaudio version**: 0.12.1+cu113  
-- **CUDA version**: 11.3  
+## Overview
 
-Other notable packages include:
-- **NumPy**: 2.0.2  
-- **Matplotlib**: 3.9.2  
-- **Open3D**: 0.18.0  
-- **Scikit-learn**: 1.5.2  
-- **Scipy**: 1.9.0  
-</details>
+TARGO is a benchmark for TARget-driven Grasping under Occlusions. It evaluates how occlusion affects 6D grasp prediction in cluttered scenes and provides synthetic and real-world evaluation data, a scalable training dataset, and TARGO-Net, a transformer-based grasping model with shape completion for robust target-driven grasping.
 
+## Environment Setup
 
-### Dataset
-You can either **download our dataset** or **generate it yourself**. Please place the dataset in the `datasets` directory. A download link for the dataset will be provided later. Demo data is already available in `datasets/demo`.
+Create a Python environment and install the runtime dependencies. Python 3.10 is the tested version.
 
-### Checkpoints
-Checkpoints can either be **downloaded directly** or **generated using our provided scripts**.
-
-
-## Dataset Generation
-
-### TARGO Dataset
-The TARGO dataset extends the VGN dataset by adding both single-object scenes and cluttered scenes.
-
-To generate the TARGO dataset:
 ```bash
-python scripts/generate_targo_dataset.py --root <output dataset directory>
+git clone git@github.com:TARGO-benchmark/TARGO.git
+cd TARGO
+
+conda create -n targo python=3.10 -y
+conda activate targo
+
+pip install --upgrade pip
+
+# Install the PyTorch build that matches your CUDA driver. This is an example for CUDA 11.8.
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+
+pip install -r requirements.txt
+pip install -e .
+
+# Build native extensions used by ConvONets and shape completion.
+python scripts/convonet_setup.py build_ext --inplace
+pip install -e src/shape_completion/pointnet2_ops
+(cd src/shape_completion/chamfer_dist && python setup.py install)
+
+export PYTHONPATH="$PWD:$PWD/src:${PYTHONPATH}"
 ```
 
-### Shape Completion Dataset
-For shape completion, no external dataset is required. Simply use the VGN dataset and generate the shape completion dataset.
+On this machine, Conda is installed at `/data3/ran/miniconda3`, but it may not be on `PATH`.
+The bundled launchers use the `targo` environment directly:
 
-To generate the shape completion dataset:
 ```bash
-python scripts/generate_sc_dataset.py --root_mpl <VGN dataset's mesh pose list directory> --dest <h5 destination directory>
+./run_inference.sh
+./run_train.sh --use_wandb
 ```
 
+You can override the interpreter:
 
-## Training
-Train the TARGO-Net with the following command:
 ```bash
-python scripts/train_targo.py --dataset_raw
+TARGO_PYTHON=/path/to/python ./run_inference.sh
 ```
 
+## Hugging Face Assets
 
-## Benchmark
-All models are evaluated on the `targo_synthetic` test set for target-driven object grasping. A grasp is considered successful only if it picks up the target object and remains collision-free throughout planning.
+- TARGO benchmark and project page: [https://targo-benchmark.github.io/](https://targo-benchmark.github.io/)
+- TARGO-Net checkpoints: [https://huggingface.co/randing2000/TARGO-Net](https://huggingface.co/randing2000/TARGO-Net)
+- TARGO dataset: [https://huggingface.co/datasets/randing2000/TARGO](https://huggingface.co/datasets/randing2000/TARGO)
+- Training and VGN-format data reference: [GIGA data instructions](https://github.com/UT-Austin-RPL/GIGA?tab=readme-ov-file)
+- GIGA pretrained/data archive reference: [data.zip](https://utexas.box.com/s/h3ferwjhuzy6ja8bzcm3nu9xq1wkn94s)
 
-To run inference for different models:
+Download the released checkpoints from the `randing2000` Hugging Face account:
+
 ```bash
-python scripts/inference.py --net TARGO | giga | giga_aff | vgn | icgnet | edgegraspnet | VN-edgegraspnet
+huggingface-cli download randing2000/TARGO-Net \
+  --local-dir . \
+  --include "checkpoints/targonet.pt" "checkpoints/adapointr.pth"
 ```
 
-<!-- Insert relevant images and ensure paths are fixed -->
+Expected local paths:
 
+```text
+checkpoints/targonet.pt
+checkpoints/adapointr.pth
+```
+
+Download the inference test set:
+
+```bash
+huggingface-cli download randing2000/TARGO \
+  --repo-type dataset \
+  --local-dir data \
+  --include "test_set_gaussian_0.005/**"
+```
+
+Download the training set:
+
+```bash
+huggingface-cli download randing2000/TARGO \
+  --repo-type dataset \
+  --local-dir data \
+  --include "syn_train/**"
+```
+
+The full dataset is large. Download only the subset you need when reproducing a specific run. Expected dataset layout after the commands above:
+
+```text
+data/syn_train/
+  grasps.csv
+  scenes/
+  mesh_pose_dict/
+  setup.json
+
+data/test_set_gaussian_0.005/
+  occ_level_dict.json
+  scenes/
+  mesh_pose_dict/
+  setup.json
+```
+
+## Train
+
+```bash
+./run_train.sh \
+  --dataset data/syn_train \
+  --dataset_raw data/syn_train \
+  --use_wandb
+```
+
+`--use_wandb` is the only wandb CLI option. When enabled, the script creates a standard project named `targo` and logs training, learning-rate, and validation metrics.
+
+Training data flow:
+
+```mermaid
+flowchart LR
+  A["TARGO dataset: grasps.csv, scenes, mesh_pose_dict"] --> B["DatasetVoxel_Target"]
+  B --> C["train/validation split"]
+  C --> D["DataLoader"]
+  D --> E["TARGO network"]
+  E --> F["loss and optimizer step"]
+  F --> G["TensorBoard logs, optional wandb logs, checkpoints"]
+```
+
+## Inference
+
+```bash
+./run_inference.sh \
+  --test_root data/test_set_gaussian_0.005 \
+  --dataset vgn \
+  --model checkpoints/targonet.pt \
+  --model_type targo \
+  --sc_model_path checkpoints/adapointr.pth \
+  --max_scenes 0
+```
+
+`inference_targo.py` only exposes `--dataset vgn` and `--model_type targo`.
+The `--test_root` value must be a real processed VGN root containing `scenes/`,
+`mesh_pose_dict/`, and `occ_level_dict.json`. Use `--max_scenes 0` to traverse all
+scenes in the test set.
+
+Inference data flow:
+
+```mermaid
+flowchart LR
+  A["VGN test scenes"] --> B["target_sample_offline_vgn"]
+  C["checkpoints/targonet.pt"] --> D["VGNImplicit TARGO planner"]
+  E["checkpoints/adapointr.pth"] --> D
+  B --> D
+  D --> F["grasp prediction and simulation"]
+  F --> G["success rate and result files"]
+```
 
 ## Acknowledgements
-This project builds upon ideas and codebases from [VGN](https://github.com/ethz-asl/vgn) and [GIGA](https://github.com/UT-Austin-RPL/GIGA). We express our gratitude to the authors for laying the groundwork and inspiring this work.
 
-<!-- ## Citation -->
-### Citation
+This project builds on ideas and code from [VGN](https://github.com/ethz-asl/vgn) and [GIGA](https://github.com/UT-Austin-RPL/GIGA).
+
+## Citation
+
 If you find this work useful, please cite:
+
 ```bibtex
 @article{xia2024targo,
   title={TARGO: Benchmarking Target-driven Object Grasping under Occlusions},
@@ -87,4 +181,3 @@ If you find this work useful, please cite:
   year={2024}
 }
 ```
-

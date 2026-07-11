@@ -8,10 +8,10 @@ import numpy as np
 import tqdm
 
 from vgn import io#, vis
-from vgn.grasp import *
-from vgn.simulation import ClutterRemovalSim
-from vgn.utils.transform import Rotation, Transform
-from vgn.utils.implicit import get_mesh_pose_list_from_world, get_scene_from_mesh_pose_list
+from src.vgn.grasp import *
+from src.vgn.simulation import ClutterRemovalSim
+from src.vgn.utils.transform import Rotation, Transform
+from src.vgn.utils.implicit import get_mesh_pose_list_from_world, get_scene_from_mesh_pose_list
 
 MAX_CONSECUTIVE_FAILURES = 2
 
@@ -70,7 +70,7 @@ def run(
             state.tsdf_process = extra_tsdf
 
         if pc.is_empty():
-            break 
+            break  # empty point cloud, abort this round TODO this should not happen
 
         grasps, scores, timings["planning"] = grasp_plan_fn(state)
 

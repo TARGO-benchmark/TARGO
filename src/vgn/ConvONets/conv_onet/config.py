@@ -2,19 +2,87 @@ import torch
 import torch.distributions as dist
 from torch import nn
 import os
-from vgn.ConvONets.encoder import encoder_dict
-from vgn.ConvONets.conv_onet import models, training
-from vgn.ConvONets.conv_onet import generation
-from vgn.ConvONets import data
-from vgn.ConvONets import config
-from vgn.ConvONets.common import decide_total_volume_range, update_reso
-from torchvision import transforms
-import numpy as np
-import torch.nn as nn
-from transformer.fusion_model import TransformerFusionModel, TransformerSceneModel
+import sys
+sys.path.append('.')
 
-def get_model_grid(cfg, device=None, dataset=None, **kwargs):
-    ''' Return the Occupancy Network model.
+from src.vgn.ConvONets.encoder import encoder_dict
+from src.vgn.ConvONets.conv_onet import models, training
+from src.vgn.ConvONets.conv_onet import generation
+# from src.vgn.ConvONets import data  # Commented out as data module doesn't exist
+from src.vgn.ConvONets.common import decide_total_volume_range, update_reso
+# Conditional import - only import TransformerFusionModel when needed (not for targo_ptv3/ptv3_scene)
+# TransformerFusionModel will be imported inside get_model_targo function
+
+def get_model_targo_ptv3(cfg, device=None, dataset=None, **kwargs):
+    ''' Return the TARGO model with PointTransformerV3 encoder.
+
+    Args:
+        cfg (dict): imported yaml config 
+        device (device): pytorch device
+        dataset (dataset): dataset
+    '''
+    decoder = cfg['decoder']
+    encoder = cfg['encoder']
+    c_dim = cfg['c_dim']
+    decoder_kwargs = cfg['decoder_kwargs']
+    encoder_kwargs = cfg['encoder_kwargs']
+    padding = cfg['padding']
+    if padding is None:
+        padding = 0.1
+    
+    # for pointcloud_crop
+    try: 
+        encoder_kwargs['unit_size'] = cfg['data']['unit_size']
+        decoder_kwargs['unit_size'] = cfg['data']['unit_size']
+    except:
+        pass
+    # local positional encoding
+    if 'local_coord' in cfg.keys():
+        encoder_kwargs['local_coord'] = cfg['local_coord']
+        decoder_kwargs['local_coord'] = cfg['local_coord']
+    if 'pos_encoding' in cfg:
+        encoder_kwargs['pos_encoding'] = cfg['pos_encoding']
+        decoder_kwargs['pos_encoding'] = cfg['pos_encoding']
+
+    tsdf_only = 'tsdf_only' in cfg.keys() and cfg['tsdf_only']
+    detach_tsdf = 'detach_tsdf' in cfg.keys() and cfg['detach_tsdf']
+
+    if tsdf_only:
+        decoders = []
+    else:
+        out_dim_qual, out_dim_rot, out_dim_width = 1,4,1
+        decoder_qual = models.decoder_dict[decoder](
+            c_dim=c_dim, padding=padding, out_dim=out_dim_qual, 
+            **decoder_kwargs
+        )
+        decoder_rot = models.decoder_dict[decoder](
+            c_dim=c_dim, padding=padding, out_dim=out_dim_rot,
+            **decoder_kwargs
+        )
+        decoder_width = models.decoder_dict[decoder](
+            c_dim=c_dim, padding=padding, out_dim=out_dim_width,
+            **decoder_kwargs
+        )
+        
+        decoders = [decoder_qual, decoder_rot, decoder_width]
+
+    # Import PointTransformerV3FusionModel only when needed (for targo_ptv3 model)
+    from src.transformer.ptv3_fusion_model import PointTransformerV3FusionModel
+    encoder_in = PointTransformerV3FusionModel()
+    
+    encoder_aff_scene = encoder_dict[encoder](
+        c_dim=c_dim, padding=padding,
+        **encoder_kwargs
+    )
+    encoders_in = [encoder_in]
+    
+    model = models.ConvolutionalOccupancyNetwork_Grid(
+        decoders, encoders_in, encoder_aff_scene, device=device, 
+        detach_tsdf=detach_tsdf, model_type='targo_ptv3')
+    return model
+
+def get_model_targo(cfg, device=None, dataset=None, **kwargs):
+    ''' Return the original TARGO model.
 
     Args:
         cfg (dict): imported yaml config 
@@ -52,171 +120,36 @@ def get_model_grid(cfg, device=None, dataset=None, **kwargs):
     if tsdf_only:
         decoders = []
     else:
-        # if not cfg['add_single_supervision']:
         out_dim_qual, out_dim_rot, out_dim_width = 1,4,1
-        # else:
-        #     out_dim_qual, out_dim_rot, out_dim_width = 2,8,2
-
         decoder_qual = models.decoder_dict[decoder](
-            c_dim=c_dim, padding=padding, out_dim=out_dim_qual,fusion_type=cfg['fusion_type'],
+            c_dim=c_dim, padding=padding, out_dim=out_dim_qual, 
             **decoder_kwargs
         )
         decoder_rot = models.decoder_dict[decoder](
-            c_dim=c_dim, padding=padding, out_dim=out_dim_rot,fusion_type=cfg['fusion_type'],
+            c_dim=c_dim, padding=padding, out_dim=out_dim_rot,
             **decoder_kwargs
         )
         decoder_width = models.decoder_dict[decoder](
-            c_dim=c_dim, padding=padding, out_dim=out_dim_width,fusion_type=cfg['fusion_type'],
+            c_dim=c_dim, padding=padding, out_dim=out_dim_width,
             **decoder_kwargs
         )
-        if not cfg['add_single_supervision']:
-            decoders = [decoder_qual, decoder_rot, decoder_width]
-        else:
-            decoder_qual_s = models.decoder_dict[decoder](
-            c_dim=c_dim, padding=padding, out_dim=out_dim_qual,
-            **decoder_kwargs
-            )
-            decoder_rot_s = models.decoder_dict[decoder](
-                c_dim=c_dim, padding=padding, out_dim=out_dim_rot,
-                **decoder_kwargs
-            )
-            decoder_width_s = models.decoder_dict[decoder](
-                c_dim=c_dim, padding=padding, out_dim=out_dim_width,
-                **decoder_kwargs
-            )
-            decoders = [decoder_qual, decoder_rot, decoder_width, decoder_qual_s, decoder_rot_s, decoder_width_s]
-    
-    if cfg['decoder_tsdf'] or tsdf_only:
-        decoder_tsdf = models.decoder_dict[decoder](
-            c_dim=c_dim, padding=padding, out_dim=1,
-            **decoder_kwargs
-        )
-        decoders.append(decoder_tsdf)
-
-    if cfg['model_type'] == "afford_scene_pc":
-            encoder_in = TransformerSceneModel(cfg['attention_params'], cfg['num_attention_layers'],\
-                 cfg['return_intermediate'], cfg['cross_att_key'], cfg['d_model'], fusion_type=cfg['fusion_type'])
-            encoder_aff_scene = encoder_dict[encoder](
-                c_dim=c_dim, padding=padding,
-                fusion_type=cfg['fusion_type'],
-                # num_layers=cfg['num_layers'],
-                **encoder_kwargs
-            )
-            encoders_in = [encoder_in]
-
-    if cfg['model_type'] == "giga_aff_plus_target_occluder_grid":
-        # if cfg['fusion_type'] == "MLP_fusion":
-        if cfg['fusion_type'] in ("MLP_fusion", "CNN_concat", "CNN_add"):
-        # if cfg['fusion_type'] in ("MLP_fusion", "transformer_fusion", "transformer_concat"):
-            if cfg['shared_weights'] == False:
-                encoder_in_targ = nn.Conv3d(1, c_dim, 3, padding=1)
-                encoder_in_scene = nn.Conv3d(1, c_dim, 3, padding=1)
-                encoder_in_occ = nn.Conv3d(1, c_dim, 3, padding=1)
-                encoders_in = [encoder_in_targ, encoder_in_scene, encoder_in_occ]
-                encoder_aff_scene = encoder_dict[encoder](
-                    c_dim=c_dim, padding=padding,
-                    fusion_type=cfg['fusion_type'],
-                    **encoder_kwargs
-                )
-            else:
-                encoder_in = nn.Conv3d(1, c_dim, 3, padding=1)
-                encoders_in = [encoder_in]
-                encoder_aff_scene = encoder_dict[encoder](
-                    c_dim=c_dim, padding=padding,
-                    fusion_type=cfg['fusion_type'],
-                    **encoder_kwargs
-                )
-        elif cfg['fusion_type'] in ('transformer_query_scene','transformer_query_target', 'transformer_concat'):
-            # encoder_in = nn.Conv3d(1, c_dim, 3, padding=1)            
-            encoder_in = TransformerFusionModel(cfg['attention_params'], cfg['num_attention_layers'],\
-                 cfg['return_intermediate'], cfg['cross_att_key'], cfg['d_model'], fusion_type=cfg['fusion_type'])
-            encoder_aff_scene = encoder_dict[encoder](
-                c_dim=c_dim, padding=padding,
-                fusion_type=cfg['fusion_type'],
-                # num_layers=cfg['num_layers'],
-                **encoder_kwargs
-            )
-            encoders_in = [encoder_in]
-
-    if cfg['model_type'] in ("afford_scene_targ_pc", "giga_aff_plus_occluder_grid"):
-        # if cfg['fusion_type'] == "MLP_fusion":
-        # if cfg['fusion_type'] in ("MLP_fusion", "CNN_concat"):
-        if cfg['fusion_type'] in ("MLP_fusion", "CNN_concat", "CNN_add"):
-        # if cfg['fusion_type'] in ("MLP_fusion", "transformer_fusion", "transformer_concat"):
-            if cfg['shared_weights'] == False:
-                encoder_in_other = nn.Conv3d(1, c_dim, 3, padding=1)
-                encoder_in_scene = nn.Conv3d(1, c_dim, 3, padding=1)
-                encoders_in = [encoder_in_other, encoder_in_scene]
-                encoder_aff_scene = encoder_dict[encoder](
-                    c_dim=c_dim, padding=padding,
-                    fusion_type=cfg['fusion_type'],
-                    **encoder_kwargs
-                )
-            else:
-                encoder_in = nn.Conv3d(1, c_dim, 3, padding=1)
-                encoders_in = [encoder_in]
-                encoder_aff_scene = encoder_dict[encoder](
-                    c_dim=c_dim, padding=padding,
-                    fusion_type=cfg['fusion_type'],
-                    **encoder_kwargs
-                )
-                
-        # elif cfg['fusion_type'] == "transformer_fusion":
-        elif cfg['fusion_type'] in ('transformer_query_scene','transformer_query_target', 'transformer_concat'):
-            assert cfg['model_type'] == "afford_scene_targ_pc"
-            encoder_in = TransformerFusionModel(cfg['attention_params'], cfg['num_attention_layers'],\
-                 cfg['return_intermediate'], cfg['cross_att_key'], cfg['d_model'], fusion_type=cfg['fusion_type'])
-            encoder_aff_scene = encoder_dict[encoder](
-                c_dim=c_dim, padding=padding,
-                fusion_type=cfg['fusion_type'],
-                **encoder_kwargs
-            )
-            encoders_in = [encoder_in]
-    
         
+        decoders = [decoder_qual, decoder_rot, decoder_width]
+
+    # Import TransformerFusionModel only when needed (for original targo model)
+    from src.transformer.fusion_model import TransformerFusionModel
+    encoder_in = TransformerFusionModel(cfg['attention_params'], cfg['num_attention_layers'],\
+            cfg['return_intermediate'], cfg['cross_att_key'], cfg['d_model'])
+    
+    encoder_aff_scene = encoder_dict[encoder](
+        c_dim=c_dim, padding=padding,
+        **encoder_kwargs
+    )
+    encoders_in = [encoder_in]
+    
     model = models.ConvolutionalOccupancyNetwork_Grid(
-        decoders, encoders_in, encoder_aff_scene,device=device, detach_tsdf=detach_tsdf,
-        shared_weights = cfg['shared_weights'], add_single_supervision= cfg['add_single_supervision'],
-        model_type = cfg['model_type'], fusion_type = cfg['fusion_type'], attention_params = cfg['attention_params'])
+        decoders, encoders_in, encoder_aff_scene,device=device, detach_tsdf=detach_tsdf, model_type='targo')
     return model
-
-
-    if 'encoder_tsdf' not in cfg:
-        if encoder == 'idx':
-            encoder = nn.Embedding(len(dataset), c_dim)
-        elif encoder is not None:
-            encoder = encoder_dict[encoder](
-                c_dim=c_dim, padding=padding,
-                **encoder_kwargs
-            )
-        else:
-            encoder = None
-
-        if tsdf_only:
-            model = models.ConvolutionalOccupancyNetworkGeometry(
-                decoder_tsdf, encoder, device=device
-            )
-        else:
-            model = models.ConvolutionalOccupancyNetwork(
-                decoders, encoder, device=device, detach_tsdf=detach_tsdf
-            )
-    else:
-        if cfg['encoder_tsdf'] == True:
-            encoder_tsdf = encoder_dict[encoder](
-                c_dim=c_dim, padding=padding,
-                **encoder_kwargs
-            )
-            encoder_aff = encoder_dict[encoder](
-                c_dim=c_dim, padding=padding,
-                **encoder_kwargs
-            )
-            encoders = [encoder_tsdf, encoder_aff]
-            model = models.ConvolutionalOccupancyNetwork_Sequential(
-                decoders, encoders, device=device, detach_tsdf=detach_tsdf
-            )
-
-    return model
-
 
 def get_model(cfg, device=None, dataset=None, **kwargs):
     ''' Return the Occupancy Network model.
@@ -234,7 +167,7 @@ def get_model(cfg, device=None, dataset=None, **kwargs):
     padding = cfg['padding']
     if padding is None:
         padding = 0.1
-
+    
     # for pointcloud_crop
     try: 
         encoder_kwargs['unit_size'] = cfg['data']['unit_size']
@@ -255,102 +188,45 @@ def get_model(cfg, device=None, dataset=None, **kwargs):
     if tsdf_only:
         decoders = []
     else:
-                # if not cfg['add_single_supervision']:
-        out_dim_qual, out_dim_rot, out_dim_width = 1,4,1
-        # else:
-        #     out_dim_qual, out_dim_rot, out_dim_width = 2,8,2
-
         decoder_qual = models.decoder_dict[decoder](
-            c_dim=c_dim, padding=padding, out_dim=out_dim_qual,
+            c_dim=c_dim, padding=padding, out_dim=1,
             **decoder_kwargs
         )
         decoder_rot = models.decoder_dict[decoder](
-            c_dim=c_dim, padding=padding, out_dim=out_dim_rot,
+            c_dim=c_dim, padding=padding, out_dim=4,
             **decoder_kwargs
         )
         decoder_width = models.decoder_dict[decoder](
-            c_dim=c_dim, padding=padding, out_dim=out_dim_width,
+            c_dim=c_dim, padding=padding, out_dim=1,
             **decoder_kwargs
         )
-        if 'add_single_supervision' not in cfg.keys():
-            decoders = [decoder_qual, decoder_rot, decoder_width]
-        else:
-            if not cfg['add_single_supervision']:
-                decoders = [decoder_qual, decoder_rot, decoder_width]
-            else:
-                decoder_qual_s = models.decoder_dict[decoder](
-                c_dim=c_dim, padding=padding, out_dim=out_dim_qual,
-                **decoder_kwargs
-                )
-                decoder_rot_s = models.decoder_dict[decoder](
-                    c_dim=c_dim, padding=padding, out_dim=out_dim_rot,
-                    **decoder_kwargs
-                )
-                decoder_width_s = models.decoder_dict[decoder](
-                    c_dim=c_dim, padding=padding, out_dim=out_dim_width,
-                    **decoder_kwargs
-                )
-            decoders = [decoder_qual, decoder_rot, decoder_width, decoder_qual_s, decoder_rot_s, decoder_width_s]
+        decoders = [decoder_qual, decoder_rot, decoder_width]
     if cfg['decoder_tsdf'] or tsdf_only:
         decoder_tsdf = models.decoder_dict[decoder](
             c_dim=c_dim, padding=padding, out_dim=1,
             **decoder_kwargs
         )
         decoders.append(decoder_tsdf)
-    if 'type_modal' in cfg and cfg['type_modal'] == 'GIGAff_Occluder':
-            encoder_targ = encoder_dict[encoder](
-                c_dim=c_dim, padding=padding,
-                **encoder_kwargs
-            )
-            encoder_scene = encoder_dict[encoder](
-                c_dim=c_dim, padding=padding,
-                **encoder_kwargs
-            )
-            encoder_occ = encoder_dict[encoder](
-                c_dim=c_dim, padding=padding,
-                **encoder_kwargs
-            )
-            encoders = [encoder_targ, encoder_scene, encoder_occ]
-            model = models.ConvolutionalOccupancyNetwork_Occluder(
-                decoders, encoders, device=device, detach_tsdf=detach_tsdf
-            )
-            return model
 
-
-    if 'encoder_tsdf' not in cfg:
-        if encoder == 'idx':
-            encoder = nn.Embedding(len(dataset), c_dim)
-        elif encoder is not None:
-            encoder = encoder_dict[encoder](
-                c_dim=c_dim, padding=padding,
-                **encoder_kwargs
-            )
-        else:
-            encoder = None
-
-        if tsdf_only:
-                    model = models.ConvolutionalOccupancyNetworkGeometry(
-                decoder_tsdf, encoder, device=device
-            )
-        else:
-            model = models.ConvolutionalOccupancyNetwork(
-                decoders, encoder, device=device, detach_tsdf=detach_tsdf
-                )
+    if encoder == 'idx':
+        encoder = nn.Embedding(len(dataset), c_dim)
+    elif encoder is not None:
+        encoder = encoder_dict[encoder](
+            c_dim=c_dim, padding=padding,
+            **encoder_kwargs
+        )
     else:
-        if cfg['encoder_tsdf'] == True:
-            encoder_tsdf = encoder_dict[encoder](
-                c_dim=c_dim, padding=padding,
-                **encoder_kwargs
-            )
-            encoder_aff = encoder_dict[encoder](
-                c_dim=c_dim, padding=padding,
-                **encoder_kwargs
-            )
-            encoders = [encoder_tsdf, encoder_aff]
-            model = models.ConvolutionalOccupancyNetwork_Sequential(
-                decoders, encoders, device=device, detach_tsdf=detach_tsdf
-            )
-    
+        encoder = None
+
+    if tsdf_only:
+        model = models.ConvolutionalOccupancyNetworkGeometry(
+            decoder_tsdf, encoder, device=device
+        )
+    else:
+        model = models.ConvolutionalOccupancyNetwork(
+            decoders, encoder, device=device, detach_tsdf=detach_tsdf
+        )
+
     return model
 
 
@@ -479,3 +355,131 @@ def get_data_fields(mode, cfg):
             fields['voxels'] = data.VoxelsField(voxels_file)
 
     return fields
+
+def get_model_ptv3_scene(cfg, device=None, dataset=None):
+    """
+    Create PTv3 Scene model that only processes scene point cloud.
+    
+    Args:
+        cfg: Configuration dictionary
+        device: Device to place model on
+        dataset: Dataset (optional)
+    
+    Returns:
+        ConvolutionalOccupancyNetwork_Grid model with PTv3 scene encoder
+    """
+    decoder = cfg['decoder']
+    encoder = cfg['encoder']
+    c_dim = cfg['c_dim']
+    decoder_kwargs = cfg['decoder_kwargs']
+    encoder_kwargs = cfg['encoder_kwargs']
+    padding = cfg.get('padding', 0.1)
+    local_coord = cfg.get('local_coord', False)
+    pos_encoding = cfg.get('pos_encoding', 'linear')
+
+    # Handle optional parameters
+    tsdf_only = cfg.get('tsdf_only', False)
+    detach_tsdf = cfg.get('detach_tsdf', False)
+
+    # Initialize decoders
+    decoder_kwargs['c_dim'] = c_dim
+    decoder_kwargs['padding'] = padding
+    # Remove out_dim from decoder_kwargs to avoid conflict
+    if tsdf_only:
+        decoder_kwargs['tsdf_only'] = tsdf_only
+    if detach_tsdf:
+        decoder_kwargs['detach_tsdf'] = detach_tsdf
+
+    # Create decoders with proper out_dim
+    decoder_qual = models.decoder_dict[decoder](out_dim=1, **decoder_kwargs)
+    decoder_rot = models.decoder_dict[decoder](out_dim=4, **decoder_kwargs)
+    decoder_width = models.decoder_dict[decoder](out_dim=1, **decoder_kwargs)
+    
+    # Create decoders list
+    decoders = [decoder_qual, decoder_rot, decoder_width]
+
+    # Import PointTransformerV3SceneModel only when needed (for ptv3_scene model)
+    from src.transformer.ptv3_scene_model import PointTransformerV3SceneModel
+    encoder_in = PointTransformerV3SceneModel()
+    
+    # Create encoder_aff (scene encoder)
+    encoder_aff_scene = encoder_dict[encoder](
+        c_dim=c_dim, padding=padding,
+        **encoder_kwargs
+    )
+    
+    # Create encoders_in list
+    encoders_in = [encoder_in]
+
+    # Create the model with correct parameter format
+    model = models.ConvolutionalOccupancyNetwork_Grid(
+        decoders, encoders_in, encoder_aff_scene,
+        device=device, detach_tsdf=detach_tsdf, model_type='ptv3_scene'
+    )
+
+    return model
+
+def get_model_ptv3_clip(cfg, device=None, dataset=None):
+    """
+    Create PTv3 CLIP model that processes scene point cloud with CLIP features.
+    
+    Args:
+        cfg: Configuration dictionary
+        device: Device to place model on
+        dataset: Dataset (optional)
+    
+    Returns:
+        ConvolutionalOccupancyNetwork_Grid model with PTv3 CLIP encoder
+    """
+    decoder = cfg['decoder']
+    encoder = cfg['encoder']
+    c_dim = cfg['c_dim']
+    decoder_kwargs = cfg['decoder_kwargs']
+    encoder_kwargs = cfg['encoder_kwargs']
+    padding = cfg.get('padding', 0.1)
+    local_coord = cfg.get('local_coord', False)
+    pos_encoding = cfg.get('pos_encoding', 'linear')
+
+    # Handle optional parameters
+    tsdf_only = cfg.get('tsdf_only', False)
+    detach_tsdf = cfg.get('detach_tsdf', False)
+
+    # Initialize decoders
+    decoder_kwargs['c_dim'] = c_dim
+    decoder_kwargs['padding'] = padding
+    # Remove out_dim from decoder_kwargs to avoid conflict
+    if tsdf_only:
+        decoder_kwargs['tsdf_only'] = tsdf_only
+    if detach_tsdf:
+        decoder_kwargs['detach_tsdf'] = detach_tsdf
+
+    # Create decoders with proper out_dim
+    decoder_qual = models.decoder_dict[decoder](out_dim=1, **decoder_kwargs)
+    decoder_rot = models.decoder_dict[decoder](out_dim=4, **decoder_kwargs)
+    decoder_width = models.decoder_dict[decoder](out_dim=1, **decoder_kwargs)
+    
+    # Create decoders list
+    decoders = [decoder_qual, decoder_rot, decoder_width]
+
+    # Import PointTransformerV3CLIPModel only when needed (for ptv3_clip model)
+    from sys import path
+    path.append('.')
+    from src.transformer.ptv3_clip_model import PointTransformerV3CLIPModel
+    encoder_in = PointTransformerV3CLIPModel()
+    
+    # Create encoder_aff (scene encoder)
+    encoder_aff_scene = encoder_dict[encoder](
+        c_dim=c_dim, padding=padding,
+        **encoder_kwargs
+    )
+    
+    # Create encoders_in list
+    encoders_in = [encoder_in]
+
+    # Create the model with correct parameter format
+    model = models.ConvolutionalOccupancyNetwork_Grid(
+        decoders, encoders_in, encoder_aff_scene,
+        device=device, detach_tsdf=detach_tsdf, model_type='ptv3_clip'
+    )
+
+    return model

@@ -81,18 +81,18 @@ class LocalDecoder(nn.Module):
                  padding=0.1,
                  concat_feat=False,
                  no_xyz=False,
-                 fusion_type = "MLP_fusion"):
+                 ):
         super().__init__()
         
         self.concat_feat = concat_feat
         # self.c_dim = c_dim * 2 if fusion_type in ("transformer_concat", "CNN_concat") else c_dim
-        c_dim = c_dim * 2 if fusion_type in ("transformer_concat", "CNN_concat") else c_dim
+        # c_dim = c_dim * 2 
         if concat_feat:
             c_dim *= 3
         self.c_dim = c_dim
         self.n_blocks = n_blocks
         self.no_xyz = no_xyz
-        hidden_size = hidden_size * 2 if fusion_type in ("transformer_concat", "CNN_concat") else hidden_size
+        # hidden_size = hidden_size * 2 
         self.hidden_size = hidden_size
 
         if c_dim != 0:

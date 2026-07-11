@@ -142,9 +142,10 @@ def read_as_3d_array(fp, fix_coords=True):
     # j -> y
     # k -> z
     values, counts = raw_data[::2], raw_data[1::2]
-    data = np.repeat(values, counts).astype(np.bool)
+    data = np.repeat(values, counts).astype(bool)
     data = data.reshape(dims)
     if fix_coords:
+        # xzy to xyz TODO the right thing
         data = np.transpose(data, (0, 2, 1))
         axis_order = 'xyz'
     else:
@@ -176,7 +177,7 @@ def read_as_coord_array(fp, fix_coords=True):
     end_indices = np.cumsum(counts)
     indices = np.concatenate(([0], end_indices[:-1])).astype(end_indices.dtype)
 
-    values = values.astype(np.bool)
+    values = values.astype(bool)
     indices = indices[values]
     end_indices = end_indices[values]
 
@@ -184,6 +185,7 @@ def read_as_coord_array(fp, fix_coords=True):
     for index, end_index in zip(indices, end_indices):
         nz_voxels.extend(range(index, end_index))
     nz_voxels = np.array(nz_voxels)
+    # TODO are these dims correct?
     # according to docs,
     # index = x * wxh + z * width + y; // wxh = width * height = d * d
 
@@ -201,7 +203,7 @@ def read_as_coord_array(fp, fix_coords=True):
     #return Voxels(data, dims, translate, scale, axis_order)
     return Voxels(np.ascontiguousarray(data), dims, translate, scale, axis_order)
 
-def dense_to_sparse(voxel_data, dtype=np.int32):
+def dense_to_sparse(voxel_data, dtype=int):
     """ From dense representation to sparse (coordinate) representation.
     No coordinate reordering.
     """
@@ -209,14 +211,14 @@ def dense_to_sparse(voxel_data, dtype=np.int32):
         raise ValueError('voxel_data is wrong shape; should be 3D array.')
     return np.asarray(np.nonzero(voxel_data), dtype)
 
-def sparse_to_dense(voxel_data, dims, dtype=np.bool):
+def sparse_to_dense(voxel_data, dims, dtype=bool):
     if voxel_data.ndim!=2 or voxel_data.shape[0]!=3:
         raise ValueError('voxel_data is wrong shape; should be 3xN array.')
     if np.isscalar(dims):
         dims = [dims]*3
     dims = np.atleast_2d(dims).T
     # truncate to integers
-    xyz = voxel_data.astype(np.int32)
+    xyz = voxel_data.astype(int)
     # discard voxels that fall outside dims
     valid_ix = ~np.any((xyz < 0) | (xyz >= dims), 0)
     xyz = xyz[:,valid_ix]
@@ -226,6 +228,7 @@ def sparse_to_dense(voxel_data, dims, dtype=np.bool):
 
 #def get_linear_index(x, y, z, dims):
     #""" Assuming xzy order. (y increasing fastest.
+    #TODO ensure this is right when dims are not all same
     #"""
     #return x*(dims[1]*dims[2]) + z*dims[1] + y
 
@@ -239,6 +242,7 @@ def write(voxel_model, fp):
 
     """
     if voxel_model.data.ndim==2:
+        # TODO avoid conversion to dense
         dense_voxel_data = sparse_to_dense(voxel_model.data, voxel_model.dims)
     else:
         dense_voxel_data = voxel_model.data

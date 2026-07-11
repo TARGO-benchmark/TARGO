@@ -6,18 +6,19 @@ from scipy import ndimage
 import torch
 
 #from vgn import vis
-from vgn.grasp import *
-from vgn.utils.transform import Transform, Rotation
-from vgn.networks import load_network, load_network_vgn
-from vgn.utils import visual
+# from src.vgn.utils.implicit import mesh_to_tsdf
+from src.utils_targo import *
+from src.vgn.grasp import *
+from src.vgn.utils.transform import Transform, Rotation
+from src.vgn.networks import load_network
+from src.vgn.utils import visual
 import matplotlib.pyplot as plt
 from copy import deepcopy
-from vgn.utils import visual
-from vgn.utils.implicit import as_mesh
+from src.vgn.utils import visual
+from src.vgn.utils.implicit import as_mesh
 
 VIS = False
-# LOW_TH = 0.5
-LOW_TH = 0.0
+LOW_TH = 0.5
 
 if VIS:
     import matplotlib
@@ -25,49 +26,57 @@ if VIS:
 
 
 class VGN(object):
-    def __init__(self, model_path, model_type, best=False, force_detection=False, qual_th=0.9, out_th=0.5, visualize=False,
-):
+    def __init__(self, model_path, model_type, best=False, force_detection=False, qual_th=0.9, out_th=0.5, visualize=False, cd_iou_measure=False):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.net = load_network_vgn(model_path, self.device, model_type=model_type)
+        self.net = load_network(model_path, self.device, model_type=model_type)
         self.net.eval()
         self.qual_th = qual_th
         self.best = best
         self.force_detection = force_detection
         self.out_th = out_th
         self.visualize = visualize
+        self.cd_iou_measure = cd_iou_measure
 
 
-    def __call__(self, state, scene_mesh=None, aff_kwargs={}):
+    def __call__(self, state, scene_mesh=None, aff_kwargs={}, hunyun2_path=None, scene_name=None, cd_iou_measure=False, target_mesh_gt=None):
         if isinstance(state.tsdf, np.ndarray):
             tsdf_vol = state.tsdf
             voxel_size = 0.3 / 40
             size = 0.3
         else:
             tsdf_vol = state.tsdf.get_grid()
+            # tsdf_vol = state.targ_grid
             voxel_size = state.tsdf.voxel_size
             size = state.tsdf.size
 
         tic = time.time()
-        qual_vol, rot_vol, width_vol = predict(tsdf_vol, self.net, self.device)
-        ## TODO
+        if hunyun2_path:
+            # inputs = state.scene_grid - state.targ_grid
+            inputs = min(state.scene_grid, state.targ_grid)
+            scene_path = hunyun2_path + '/' + scene_name + '/reconstruction/targ_obj_v6.ply'
+            targ_mesh = trimesh.load(scene_path)
+            targ_pc = targ_mesh.sample(2048)
+            targ_grid = point_cloud_to_tsdf(targ_pc)
+            targ_grid = targ_grid.squeeze()
+            # targ_grid = torch.from_numpy(targ_grid)
+            inputs += targ_grid
+            # completed_targ_grid = targ_grid
 
-        qual_vol, rot_vol, width_vol = process(state.tgt_mask_vol[0], qual_vol, rot_vol, width_vol, out_th=self.out_th)
+        if not hunyun2_path:
+            qual_vol, rot_vol, width_vol = predict(tsdf_vol, self.net, self.device)
+        else:
+            qual_vol, rot_vol, width_vol = predict(inputs, self.net, self.device)
+
+
+        qual_vol, rot_vol, width_vol = process(state.targ_grid.squeeze(), qual_vol, rot_vol, width_vol, out_th=self.out_th)
         qual_vol = bound(qual_vol, voxel_size)
 
         if self.visualize:
             colored_scene_mesh = visual.affordance_visual(
                 qual_vol, rot_vol.transpose(1, 2, 3, 0),
                 scene_mesh, size, 40, **aff_kwargs)
-        
-        # if len(state.__dict__) > 3:
-        if state.type in ('vgn', 'giga_aff','giga'):
-            # qual_vol = qual_vol * state.tgt_mask_vol[0]
-            # grasps, scores = select(qual_vol.copy(), self.pos.view(self.resolution, self.resolution, self.resolution, 3).cpu(), rot_vol, width_vol, threshold=self.qual_th, force_detection=self.force_detection, max_filter_size=8 if self.visualize else 4)
-            grasps, scores = select(qual_vol.copy(), rot_vol, width_vol, threshold=self.qual_th, force_detection=self.force_detection, max_filter_size=8 if self.visualize else 4)
-        else:
-            # grasps, scores = select(qual_vol.copy(), self.pos.view(self.resolution, self.resolution, self.resolution, 3).cpu(), rot_vol, width_vol, threshold=self.qual_th, force_detection=self.force_detection, max_filter_size=8 if self.visualize else 4)
-            grasps, scores = select(qual_vol.copy(), rot_vol, width_vol, threshold=self.qual_th, force_detection=self.force_detection, max_filter_size=8 if self.visualize else 4)
-        # grasps, scores = select(qual_vol.copy(), rot_vol, width_vol, threshold=self.qual_th, force_detection=self.force_detection, max_filter_size=8 if self.visualize else 4)
+                
+        grasps, scores = select(qual_vol.copy(), rot_vol, width_vol, threshold=self.qual_th, force_detection=self.force_detection, max_filter_size=8 if self.visualize else 4)
         toc = time.time() - tic
 
         grasps, scores = np.asarray(grasps), np.asarray(scores)
@@ -81,14 +90,26 @@ class VGN(object):
             grasps = [from_voxel_coordinates(g, voxel_size) for g in grasps[p]]
             scores = scores[p]
 
+        # Initialize default CD and IoU values for VGN
+        cd = -1.0  # VGN doesn't do shape reconstruction
+        iou = -1.0  # VGN doesn't do shape reconstruction
+
         if self.visualize:
             grasp_mesh_list = [visual.grasp2mesh(g, s) for g, s in zip(grasps, scores)]
             composed_scene = trimesh.Scene(colored_scene_mesh)
             for i, g_mesh in enumerate(grasp_mesh_list):
                 composed_scene.add_geometry(g_mesh, node_name=f'grasp_{i}')
-            return grasps, scores, toc, composed_scene
+            # Return consistent format with VGNImplicit when cd_iou_measure is True
+            if self.cd_iou_measure or cd_iou_measure:
+                return grasps, scores, toc, cd, iou
+            else:
+                return grasps, scores, toc, composed_scene
         else:
-            return grasps, scores, toc
+            # Return consistent format with VGNImplicit when cd_iou_measure is True
+            if self.cd_iou_measure or cd_iou_measure:
+                return grasps, scores, toc, cd, iou
+            else:
+                return grasps, scores, toc
 
 def bound(qual_vol, voxel_size, limit=[0.02, 0.02, 0.055]):
     # avoid grasp out of bound [0.02  0.02  0.055]
@@ -184,14 +205,6 @@ def select(qual_vol, rot_vol, width_vol, threshold=0.90, max_filter_size=4, forc
 
     return sorted_grasps, sorted_scores
 
-# def select_index(qual_vol, rot_vol, width_vol, index):
-#     i, j, k = index
-#     score = qual_vol[i, j, k]
-#     ori = Rotation.from_quat(rot_vol[:, i, j, k])
-#     pos = np.array([i, j, k], dtype=np.float64)
-#     width = width_vol[i, j, k]
-#     return Grasp(Transform(ori, pos), width), score
-
 def select_index(qual_vol, rot_vol, width_vol, index):
     i, j, k = index
     score = qual_vol[i, j, k]
@@ -199,25 +212,3 @@ def select_index(qual_vol, rot_vol, width_vol, index):
     pos = np.array([i, j, k], dtype=np.float64)
     width = width_vol[i, j, k]
     return Grasp(Transform(ori, pos), width), score
-
-def select_target(qual_vol, rot_vol, width_vol, threshold=0.90, max_filter_size=4, force_detection=False):
-    # non maximum suppression
-    max_vol = ndimage.maximum_filter(qual_vol, size=max_filter_size)
-    qual_vol = np.where(qual_vol == max_vol, qual_vol, 0.0)
-    mask = np.where(qual_vol, 1.0, 0.0)
-
-    # construct grasps
-    grasps, scores = [], []
-    for index in np.argwhere(mask):
-        grasp, score = select_index(qual_vol, rot_vol, width_vol, index)
-        grasps.append(grasp)
-        scores.append(score)
-
-    sorted_grasps = [grasps[i] for i in reversed(np.argsort(scores))]
-    sorted_scores = [scores[i] for i in reversed(np.argsort(scores))]
-
-    if best_only and len(sorted_grasps) > 0:
-        sorted_grasps = [sorted_grasps[0]]
-        sorted_scores = [sorted_scores[0]]
-
-    return sorted_grasps, sorted_scores

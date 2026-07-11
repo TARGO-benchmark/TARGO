@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+
+# Local environments
+.venv/
+venv/
+env/
+
+# Generated data and outputs
+data/
+data_scenes/
+checkpoints/
+checkpoints_gaussian/
+outputs/
+results/
+targo_eval_results/
+train_logs/
+train_logs_*/
+visualization/
+wandb/
+tmp/
+tmp_mesh/
+
+# Large geometry/media artifacts
+*.glb
+*.obj
+*.ply
+*.mp4
+*.png
+*.jpg
+*.jpeg
+*.pdf
+
+# Build artifacts
+build/
+dist/
+*.egg

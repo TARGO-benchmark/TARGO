@@ -5,9 +5,9 @@ import numpy as np
 from sensor_msgs.msg import PointCloud2
 import rospy
 
-from vgn.grasp import Grasp
-from vgn.utils import ros_utils
-from vgn.utils.transform import Rotation, Transform
+from src.vgn.grasp import Grasp
+from src.vgn.utils import ros_utils
+from src.vgn.utils.transform import Rotation, Transform
 
 
 class GPD(object):

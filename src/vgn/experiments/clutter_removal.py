@@ -6,12 +6,12 @@ import uuid
 import numpy as np
 import pandas as pd
 import tqdm
-import math
+
 from vgn import io#, vis
-from vgn.grasp import *
-from vgn.simulation import ClutterRemovalSim
-from vgn.utils.transform import Rotation, Transform
-from vgn.utils.implicit import get_mesh_pose_list_from_world, get_scene_from_mesh_pose_list
+from src.vgn.grasp import *
+from src.vgn.simulation import ClutterRemovalSim
+from src.vgn.utils.transform import Rotation, Transform
+from src.vgn.utils.implicit import get_mesh_pose_list_from_world, get_scene_from_mesh_pose_list
 
 MAX_CONSECUTIVE_FAILURES = 2
 
@@ -36,10 +36,7 @@ def run(
     sideview=False,
     resolution=40,
     silence=False,
-    visualize=False,
-    tgt_sample=False,
-    complete_shape=False,
-    type = 'GIGA',
+    visualize=False
 ):
     """Run several rounds of simulated clutter removal experiments.
 
@@ -50,7 +47,7 @@ def run(
     #sideview=False
     #n = 6
     sim = ClutterRemovalSim(scene, object_set, gui=sim_gui, seed=seed, add_noise=add_noise, sideview=sideview)
-    logger = Logger(logdir, description,tgt_sample=tgt_sample)
+    logger = Logger(logdir, description)
     cnt = 0
     success = 0
     left_objs = 0
@@ -73,24 +70,16 @@ def run(
         while sim.num_objects > 0 and consecutive_failures < MAX_CONSECUTIVE_FAILURES:
             trial_id += 1
             timings = {}
-            
-            if complete_shape:
-                tsdf, pc, timings["integration"] = sim.acquire_complete_tsdf(n=n, N=N, resolution=resolution)
-            else:
-                tsdf, pc, timings["integration"] = sim.acquire_tsdf(n=n, N=N, resolution=40)
 
-            state = argparse.Namespace(tsdf=tsdf, pc=pc, type = type)
+            # scan the scene
+            tsdf, pc, timings["integration"] = sim.acquire_tsdf(n=n, N=N, resolution=40)
+            state = argparse.Namespace(tsdf=tsdf, pc=pc)
             if resolution != 40:
-                if not complete_shape:
-                    extra_tsdf, _, _ = sim.acquire_tsdf(n=n, N=N, resolution=resolution)
-                    state.tsdf_process = extra_tsdf
-                else:
-                    extra_tsdf, _, _ = sim.acquire_complete_tsdf(n=n, N=N, resolution=40)
-                    state.tsdf_process = extra_tsdf    
-                
+                extra_tsdf, _, _ = sim.acquire_tsdf(n=n, N=N, resolution=resolution)
+                state.tsdf_process = extra_tsdf
+
             if pc.is_empty():
-                break 
-                # continue
+                break  # empty point cloud, abort this round TODO this should not happen
 
             # plan grasps
             if visualize:
@@ -105,22 +94,17 @@ def run(
 
             if len(grasps) == 0:
                 no_grasp += 1
-                logger.log_grasp(round_id, state, timings, None, None, 0, None, no_valid_grasp=True)
-
                 break  # no detections found, abort this round
-                # continue
 
             # execute grasp
             grasp, score = grasps[0], scores[0]
-            # grasp.width *= 1.5
-            grasp.width = sim.gripper.max_opening_width
             label, _ = sim.execute_grasp(grasp, allow_contact=True)
             cnt += 1
             if label != Label.FAILURE:
                 success += 1
 
             # log the grasp
-            logger.log_grasp(round_id, state, timings, grasp, score, label, None)
+            logger.log_grasp(round_id, state, timings, grasp, score, label)
 
             if last_label == Label.FAILURE and label == Label.FAILURE:
                 consecutive_failures += 1
@@ -143,7 +127,7 @@ def run(
 
 
 class Logger(object):
-    def __init__(self, root, description, tgt_sample=False):
+    def __init__(self, root, description):
         time_stamp = datetime.now().strftime("%y-%m-%d-%H-%M-%S")
         description = "{}_{}".format(time_stamp, description).strip("_")
 
@@ -156,14 +140,13 @@ class Logger(object):
 
         self.rounds_csv_path = self.logdir / "rounds.csv"
         self.grasps_csv_path = self.logdir / "grasps.csv"
-        self._create_csv_files_if_needed(tgt_sample)
+        self._create_csv_files_if_needed()
 
-    def _create_csv_files_if_needed(self, tgt_sample ):
+    def _create_csv_files_if_needed(self):
         if not self.rounds_csv_path.exists():
             io.create_csv(self.rounds_csv_path, ["round_id", "object_count"])
 
-        if not self.grasps_csv_path.exists() and not tgt_sample:
-            # if not tgt_sample:
+        if not self.grasps_csv_path.exists():
             columns = [
                 "round_id",
                 "scene_id",
@@ -177,30 +160,10 @@ class Logger(object):
                 "width",
                 "score",
                 "label",
-                "integration_time",
-                "planning_time",
-            ]
-            
-        if not self.grasps_csv_path.exists() and tgt_sample:
-            columns = [
-                "round_id",
-                "scene_id",
-                "qx",
-                "qy",
-                "qz",
-                "qw",
-                "x",
-                "y",
-                "z",
-                "width",
-                "score",
-                "label",
-                "occ_level",
                 "integration_time",
                 "planning_time",
             ]
             io.create_csv(self.grasps_csv_path, columns)
-            
 
     def last_round_id(self):
         df = pd.read_csv(self.rounds_csv_path)
@@ -213,63 +176,35 @@ class Logger(object):
         scene_mesh.export(self.mesh_dir / (name + "_scene.obj"))
         aff_mesh.export(self.mesh_dir / (name + "_aff.obj"))
 
-    def log_grasp(self, round_id=None, state=None, timings=None, grasp=None, score=None, label=None, occ_level= None, no_valid_grasp=False):
+    def log_grasp(self, round_id, state, timings, grasp, score, label):
         # log scene
-        if not no_valid_grasp:
-            tsdf, points = state.tsdf, np.asarray(state.pc.points)
-            scene_id = uuid.uuid4().hex
-            scene_path = self.scenes_dir / (scene_id + ".npz")
-            np.savez_compressed(scene_path, grid=tsdf.get_grid(), points=points)
+        tsdf, points = state.tsdf, np.asarray(state.pc.points)
+        scene_id = uuid.uuid4().hex
+        scene_path = self.scenes_dir / (scene_id + ".npz")
+        np.savez_compressed(scene_path, grid=tsdf.get_grid(), points=points)
 
-            # log grasp
-            qx, qy, qz, qw = grasp.pose.rotation.as_quat()
-            x, y, z = grasp.pose.translation
-            width = grasp.width
-            label = int(label)
-        else:
-            scene_id = uuid.uuid4().hex
-            qx, qy, qz, qw = 0, 0, 0, 0
-            x, y, z = 0, 0, 0
-            width = 0
-            label = 0
-            score = 0
-        if not occ_level:
-            io.append_csv(
-                self.grasps_csv_path,
-                round_id,
-                scene_id,
-                qx,
-                qy,
-                qz,
-                qw,
-                x,
-                y,
-                z,
-                width,
-                score,
-                label,
-                timings["integration"],
-                timings["planning"],
-            )
-        else:
-            io.append_csv(
-                self.grasps_csv_path,
-                round_id,
-                scene_id,
-                qx,
-                qy,
-                qz,
-                qw,
-                x,
-                y,
-                z,
-                width,
-                score,
-                label,
-                occ_level,
-                timings["integration"],
-                timings["planning"],
-            )
+        # log grasp
+        qx, qy, qz, qw = grasp.pose.rotation.as_quat()
+        x, y, z = grasp.pose.translation
+        width = grasp.width
+        label = int(label)
+        io.append_csv(
+            self.grasps_csv_path,
+            round_id,
+            scene_id,
+            qx,
+            qy,
+            qz,
+            qw,
+            x,
+            y,
+            z,
+            width,
+            score,
+            label,
+            timings["integration"],
+            timings["planning"],
+        )
 
 
 class Data(object):

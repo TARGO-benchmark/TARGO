@@ -6,22 +6,42 @@ import mcubes
 import numpy as np
 import json
 import h5py
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.vgn.utils import visual
+from collections import OrderedDict
+# Load and parse URDF files
 from urdfpy import URDF
 from torch import nn
-from vgn.utils.implicit import *
-from vgn.simulation import ClutterRemovalSim
-from vgn.perception import *
-from vgn.utils.transform import Rotation, Transform
+# from vgn.simulation import ClutterRemovalSim
+
+from src.vgn.utils.implicit import *
+# from vgn.simulation import ClutterRemovalSim
+from src.vgn.perception import *
+# from src.vgn.eval import *
+from src.vgn.ConvONets.eval import *
+from src.vgn.utils.transform import Rotation, Transform
+# from vgn.utils.misc import apply_noise, apply_translational_noise
+# from acronym_tools import load_mesh, create_gripper_marker
+# from vgn.simulation import ClutterRemovalSim
 from pathlib import Path
 import matplotlib.pyplot as plt
 import os
 from matplotlib.colors import ListedColormap
-import pymeshfix
-import pyvista as pv 
+# import pymeshfix
+# import pyvista as pv 
 from pysdf import SDF
 
+# import matplotlib.pyplot as plt
+# from matplotlib.colors import ListedColormap
+# from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from skimage.measure import marching_cubes
 
+# def trimesh_scene2collisio_manager(trimesh_scene):
+#     collision_manager = trimesh.collision.CollisionManager()
+#     for mesh in trimesh_scene.geometry.values():
+#         collision_manager.add_object(mesh.visual, mesh.visual_name)
+#     return collision_manager
 
 import matplotlib
 matplotlib.use('Agg')  # Set non-interactive backend
@@ -32,8 +52,81 @@ import torch.nn.functional as F
 import torch
 # import MinkowskiEngine as ME
 
+import sys
+# print(sys.path)
 # from shape_completion.data_transforms import Compose
+def trimesh_to_open3d(mesh):
+    vertices = np.asarray(mesh.vertices)
+    triangles = np.asarray(mesh.faces)
+    o3d_mesh = o3d.geometry.TriangleMesh()
+    o3d_mesh.vertices = o3d.utility.Vector3dVector(vertices)
+    o3d_mesh.triangles = o3d.utility.Vector3iVector(triangles)
+    if hasattr(mesh.visual, 'face_colors'):
+        o3d_mesh.vertex_colors = o3d.utility.Vector3dVector(mesh.visual.face_colors[:, :3] / 255.0)
+    o3d_mesh.compute_vertex_normals()
+    return o3d_mesh
 
+def combine_meshes(mesh_list):
+    combined_mesh = o3d.geometry.TriangleMesh()
+    for mesh in mesh_list:
+        combined_mesh += mesh
+    return combined_mesh
+
+def save_numpy_as_ply(points, ply_file_path):
+    """
+    Save a numpy array as a PLY file using Open3D.
+    
+    :param points: A numpy array of shape (N, 3) representing the point cloud.
+    :param ply_file_path: The file path to save the PLY file.
+    """
+    # Convert numpy array to Open3D PointCloud
+    point_cloud = o3d.geometry.PointCloud()
+    point_cloud.points = o3d.utility.Vector3dVector(points)
+    
+    # Save point cloud to a PLY file
+    o3d.io.write_point_cloud(ply_file_path, point_cloud)
+    print(f"Point cloud saved to {ply_file_path}")
+
+def generate_and_transform_grasp_meshes(grasp, pc, save_dir):
+    # Convert grasp into a mesh
+    grasp_mesh = visual.grasp2mesh_no_score(grasp)  # Assuming grasp2mesh doesn't require a score now
+
+    # Define the transformation function
+    def apply_custom_transformation(mesh):
+        # Extract the vertices from the mesh
+        vertices = np.asarray(mesh.vertices)
+        # Apply the transformation
+        transformed_vertices = (vertices + 0.5) * 0.3 - np.array([0, 0, 0.02])
+        # Update the mesh with transformed vertices
+        mesh.vertices = o3d.utility.Vector3dVector(transformed_vertices)
+        return mesh
+
+    # Apply the transformation to the grasp mesh
+    o3d_mesh = trimesh_to_open3d(grasp_mesh)  # Assuming trimesh_to_open3d is already defined
+    transformed_mesh = apply_custom_transformation(o3d_mesh)
+
+    # Apply color based on a fixed value (since score is no longer used)
+    green_intensity = 1.0  # You can adjust this value as needed for the color intensity
+    color = [1.0 - green_intensity, 1.0, 1.0 - green_intensity]  # Color range from white to green
+    colors = np.tile(color, (len(transformed_mesh.vertices), 1))
+    transformed_mesh.vertex_colors = o3d.utility.Vector3dVector(colors)
+
+    # Combine the transformed grasp mesh into a list (even though it's a single mesh for consistency)
+    combined_grasp_mesh = combine_meshes([transformed_mesh])
+
+    # Save the scene point cloud and combined grasp mesh
+    if not os.path.exists(os.path.join(save_dir, 'icgnet_grasp')):
+        os.makedirs(os.path.join(save_dir, 'icgnet_grasp'))
+    scene_pc_path = os.path.join(save_dir, 'icgnet_grasp/pc_targo.ply')
+    # o3d.io.write_point_cloud(scene_pc_path, pc)
+    save_numpy_as_ply(np.asarray(pc), scene_pc_path)
+    # print(f"scene_pc is at {scene_pc_path}")
+
+    grasp_path = os.path.join(save_dir, "icgnet_grasp/grasp_targo.ply")
+    o3d.io.write_triangle_mesh(grasp_path, combined_grasp_mesh)
+    print(f"grasps are at {grasp_path}")
+
+          
 def filter_and_pad_point_clouds_dexycb(points, lower_bound=torch.tensor([0.02, 0.02, 0.055]) , upper_bound=torch.tensor([0.68, 0.68, 0.7]), N=2048):
     """
     Filter each point cloud within a bounding box and pad or truncate to N points.
@@ -78,50 +171,168 @@ def filter_and_pad_point_clouds_dexycb(points, lower_bound=torch.tensor([0.02, 0
     
     return processed_points
 
-def filter_and_pad_point_clouds(points, lower_bound=torch.tensor([0.02, 0.02, 0.055]) / 0.3 - 0.5, upper_bound=torch.tensor([0.28, 0.28, 0.3])/ 0.3 - 0.5, N=2048):
-    """
-    Filter each point cloud within a bounding box and pad or truncate to N points.
+# def filter_and_pad_point_clouds(points, lower_bound=torch.tensor([0.02, 0.02, 0.055]) / 0.3 - 0.5, upper_bound=torch.tensor([0.28, 0.28, 0.3])/ 0.3 - 0.5, N=2048):
+#     """
+#     Filter each point cloud within a bounding box and pad or truncate to N points.
     
+#     Args:
+#         points (torch.Tensor): The point cloud data, shape (BS, N, 3).
+#         lower_bound (torch.Tensor): Lower limit of the bounding box, shape (3,).
+#         upper_bound (torch.Tensor): Upper limit of the bounding box, shape (3,).
+#         N (int): The desired number of points in each point cloud, default is 2048.
+    
+#     Returns:
+#         torch.Tensor: The processed point cloud data, shape (BS, N, 3). Ensures the processed points are on the same device as the input points.
+#     """
+#     BS, _, _ = points.shape
+#     lower_bound = lower_bound.to(points.device)
+#     upper_bound = upper_bound.to(points.device)
+#     processed_points = torch.zeros((BS, N, 3), dtype=points.dtype, device=points.device)  # Ensure the tensor is on the same device as the input points.
+
+#     for i in range(BS):
+#         # Extract a single point cloud
+#         single_point_cloud = points[i]
+
+#         # Apply bounding box filter
+#         mask = (single_point_cloud >= lower_bound) & (single_point_cloud <= upper_bound)
+#         mask = mask.all(dim=1)
+#         filtered_points = single_point_cloud[mask]
+
+#         # Pad or truncate to match N points
+#         filtered_len = filtered_points.size(0)
+#         if filtered_len < N:
+#             # If there are fewer points than N after filtering, pad with the last point
+#             if filtered_len > 0:
+#                 padding = filtered_points[-1].unsqueeze(0).repeat(N - filtered_len, 1)
+#                 processed_points[i] = torch.cat([filtered_points, padding], dim=0)
+#             else:
+#                 # If no points are left after filtering, you can choose to keep an empty point cloud
+#                 # or fill with zeros. Here, we choose to keep it as all zeros.
+#                 continue
+#         else:
+#             # If there are more points than N, truncate
+#             processed_points[i] = filtered_points[:N]
+    
+#     return processed_points
+
+def filter_and_pad_point_clouds_rs(
+    points,
+    lower_bound=torch.tensor([0.02, 0.02, 0.055]),
+    upper_bound=torch.tensor([0.28, 0.28, 0.3]),
+    N=2048
+):
+    """
+    Filter each point cloud within a bounding box and pad or truncate to N points, using a more
+    vectorized approach for bounding-box filtering.
+
     Args:
-        points (torch.Tensor): The point cloud data, shape (BS, N, 3).
+        points (torch.Tensor): The point cloud data, shape (BS, M, 3). 
+                               M can be any number of points (not necessarily 2048).
         lower_bound (torch.Tensor): Lower limit of the bounding box, shape (3,).
         upper_bound (torch.Tensor): Upper limit of the bounding box, shape (3,).
-        N (int): The desired number of points in each point cloud, default is 2048.
+        N (int): The desired number of points in each point cloud. Default is 2048.
     
     Returns:
-        torch.Tensor: The processed point cloud data, shape (BS, N, 3). Ensures the processed points are on the same device as the input points.
+        torch.Tensor: The processed point cloud data, shape (BS, N, 3). The output is on
+                      the same device as the input points.
     """
-    BS, _, _ = points.shape
+    # Number of batches (BS) and original number of points (M)
+    BS, M, _ = points.shape
+
+    # Move bounds to the same device as points
     lower_bound = lower_bound.to(points.device)
     upper_bound = upper_bound.to(points.device)
-    processed_points = torch.zeros((BS, N, 3), dtype=points.dtype, device=points.device)  # Ensure the tensor is on the same device as the input points.
 
+    # Create a mask for all batches at once: shape will be (BS, M)
+    # We check whether each point is within the bounding box
+    # mask = (points >= lower_bound) & (points <= upper_bound)  # shape: (BS, M, 3)
+    # mask = mask.all(dim=2)  # reduce across the coordinate dimension, resulting in (BS, M)
+
+    # Prepare a storage tensor for the final processed point clouds
+    processed_points = torch.zeros(
+        (BS, N, 3),
+        dtype=points.dtype,
+        device=points.device
+    )
+
+    # For each batch, pad or truncate after we've already identified which points are in the box
     for i in range(BS):
-        # Extract a single point cloud
-        single_point_cloud = points[i]
+        # valid_points = points[i][mask[i]]  # shape: (num_in_box, 3)
+        valid_points = points[i]
+        valid_len = valid_points.size(0)
 
-        # Apply bounding box filter
-        mask = (single_point_cloud >= lower_bound) & (single_point_cloud <= upper_bound)
-        mask = mask.all(dim=1)
-        filtered_points = single_point_cloud[mask]
-
-        # Pad or truncate to match N points
-        filtered_len = filtered_points.size(0)
-        if filtered_len < N:
-            # If there are fewer points than N after filtering, pad with the last point
-            if filtered_len > 0:
-                padding = filtered_points[-1].unsqueeze(0).repeat(N - filtered_len, 1)
-                processed_points[i] = torch.cat([filtered_points, padding], dim=0)
-            else:
-                # If no points are left after filtering, you can choose to keep an empty point cloud
-                # or fill with zeros. Here, we choose to keep it as all zeros.
-                continue
+        if valid_len == 0:
+            # If no points remain after filtering, we leave it as zeros
+            # (You could also fill it with some default points if desired)
+            continue
+        elif valid_len < N:
+            # Pad with the last valid point if we have fewer than N points
+            padding = valid_points[-1].unsqueeze(0).repeat(N - valid_len, 1)
+            processed_points[i] = torch.cat([valid_points, padding], dim=0)
         else:
-            # If there are more points than N, truncate
-            processed_points[i] = filtered_points[:N]
-    
+            # If we have more than N points, truncate
+            processed_points[i] = valid_points[:N]
+
     return processed_points
 
+def filter_and_pad_point_clouds(
+    points,
+    lower_bound=torch.tensor([0.02, 0.02, 0.055]) / 0.3 - 0.5,
+    upper_bound=torch.tensor([0.28, 0.28, 0.3]) / 0.3 - 0.5,
+    N=2048
+):
+    """
+    Filter each point cloud within a bounding box and pad or truncate to N points, using a more
+    vectorized approach for bounding-box filtering.
+
+    Args:
+        points (torch.Tensor): The point cloud data, shape (BS, M, 3). 
+                               M can be any number of points (not necessarily 2048).
+        lower_bound (torch.Tensor): Lower limit of the bounding box, shape (3,).
+        upper_bound (torch.Tensor): Upper limit of the bounding box, shape (3,).
+        N (int): The desired number of points in each point cloud. Default is 2048.
+    
+    Returns:
+        torch.Tensor: The processed point cloud data, shape (BS, N, 3). The output is on
+                      the same device as the input points.
+    """
+    # Number of batches (BS) and original number of points (M)
+    BS, M, _ = points.shape
+
+    # Move bounds to the same device as points
+    lower_bound = lower_bound.to(points.device)
+    upper_bound = upper_bound.to(points.device)
+
+    # Create a mask for all batches at once: shape will be (BS, M)
+    # We check whether each point is within the bounding box
+    mask = (points >= lower_bound) & (points <= upper_bound)  # shape: (BS, M, 3)
+    mask = mask.all(dim=2)  # reduce across the coordinate dimension, resulting in (BS, M)
+
+    # Prepare a storage tensor for the final processed point clouds
+    processed_points = torch.zeros(
+        (BS, N, 3),
+        dtype=points.dtype,
+        device=points.device
+    )
+
+    # For each batch, pad or truncate after we've already identified which points are in the box
+    for i in range(BS):
+        valid_points = points[i][mask[i]]  # shape: (num_in_box, 3)
+        valid_len = valid_points.size(0)
+
+        if valid_len == 0:
+            # If no points remain after filtering, we leave it as zeros
+            # (You could also fill it with some default points if desired)
+            continue
+        elif valid_len < N:
+            # Pad with the last valid point if we have fewer than N points
+            padding = valid_points[-1].unsqueeze(0).repeat(N - valid_len, 1)
+            processed_points[i] = torch.cat([valid_points, padding], dim=0)
+        else:
+            # If we have more than N points, truncate
+            processed_points[i] = valid_points[:N]
+
+    return processed_points
 
 def points_within_boundary(points):
     lower_bound = np.array([0.02, 0.02, 0.055])
@@ -180,6 +391,28 @@ def depth_to_point_cloud(depth_img, mask_targ, intrinsics, extrinsics, num_point
     points_transformed = specify_num_points(points_transformed, num_points)
     
     return points_transformed
+
+
+# transform = Compose([{
+#         'callback': 'UpSamplePoints',
+#         'parameters': {
+#             'n_points': 2048
+#         },
+#         'objects': ['input']
+#     }, {
+#         'callback': 'ToTensor',
+#         'objects': ['input']
+#     }])
+
+def transform_pc(pc):
+    # device = pc.device
+    # pc = pc.cpu().numpy()
+    # BS = pc.shape[0]
+    # pc_transformed = torch.zeros((BS, 2048, 3), dtype=torch.float32)
+    # for i in range(BS):
+    points_curr_transformed = transform({'input':pc})
+        # pc_transformed[i] = points_curr_transformed['input']
+    return points_curr_transformed['input']
 
 
 def record_occ_level_count(occ_level, occ_level_count_dict):
@@ -438,7 +671,6 @@ def save_scene_as_ply(scene, file_path):
         file.write(ply_data)
     print(f"Scene saved as '{file_path}'")
 
-
 def count_unique_scenes(df):
     """
     Count the number of unique clutter and single scenes in a dataframe.
@@ -458,6 +690,8 @@ def count_unique_scenes(df):
     print(f"Unique clutter scenes: {unique_clutter_scenes}")
     print(f"Unique single scenes: {unique_single_scenes}")
 
+
+    # return unique_clutter_scenes, unique_single_scenes
 
 def remove_target_from_scene(scene_pc, target_pc):
     """
@@ -537,6 +771,8 @@ def print_and_count_patterns(df, unique_id = False):
         unique_ids = df['scene_id'].str.extract(unique_id_pattern)[0]
         unique_id_count = unique_ids.nunique()
         print("Number of unique IDs: ", unique_id_count)
+
+    # print("sampled data frames stastics")
 
     # Print the counts with informative messages
     print("Number of cluttered scenes: ", count_c)
@@ -645,6 +881,33 @@ def visualize_and_save_tsdf(tsdf_data, file_path, edge_color='k', point=None, po
     plt.savefig(file_path)
 
 
+# def visualize_and_save_tsdf(tsdf_data, file_path, edge_color='k', show_plot=False):
+#     """
+#     Visualize a TSDF grid and save the visualization to a file.
+
+#     Parameters:
+#     - tsdf_data: 3D numpy array representing the TSDF grid.
+#     - file_path: String, path to save the visualization.
+#     - edge_color: String, color of the edges in the plot.
+#     - show_plot: Boolean, if True, the plot will be displayed.
+#     """
+#     # Create a figure for plotting
+#     fig = plt.figure()
+
+#     # Add a 3D subplot
+#     ax = fig.add_subplot(111, projection='3d')
+
+#     # Visualize the data
+#     ax.voxels(tsdf_data, edgecolor=edge_color)
+
+#     # Save the plot
+#     plt.savefig(file_path)
+
+#     # Show the plot if requested
+#     if show_plot:
+#         plt.show()
+        
+# Function: find_urdf
 def find_urdf(file_path):
     base_dir = os.path.dirname(file_path)
     filename = os.path.basename(file_path)
@@ -652,7 +915,7 @@ def find_urdf(file_path):
         if filename in urdf_path:
             return os.path.join(base_dir, urdf_path)
 
-
+# Function: collect_mesh_pose_list
 def collect_mesh_pose_list(sim, exclude_plane=False):
     mesh_pose_list = []
     for uid in sim.world.bodies.keys():
@@ -672,11 +935,58 @@ def collect_mesh_pose_list(sim, exclude_plane=False):
         mesh_pose_list.append((mesh_path, scale, pose))
     return mesh_pose_list
 
+# # Function: sim_select_single_scene
+# def sim_select_single_scene(sim, indices):
+#     # urdf_root = sim.urdf_root
+#     scene = sim.scene
+#     object_set = sim.object_set
+#     # size = sim.size
+#     # sim_selected = ClutterRemovalSim(urdf_root, size,scene, object_set, gui=False)  ## create a new sim
+#     sim_selected = ClutterRemovalSim(scene, object_set, False)
+#     sim.urdf_root = Path("data/urdfs")
+#     # sim_selected = ClutterRemovalSim(sim.urdf_root, sim.size, sim.scene, sim.object_set, gui=sim.gui)  ## create a new sim
+    
+#     # set some attributes
+#     # sim_selected.gui = False
+#     sim_selected.add_noise = sim.add_noise
+#     sim_selected.sideview = sim.sideview
+#     sim_selected.size = sim.size
+#     # sim_selected.intrinsic = sim.intrinsic
+#     intrinsics = CameraIntrinsic(640, 480, 540.0, 540.0, 320.0, 240.0)
+#     sim_selected.camera = sim_selected.world.add_camera(intrinsics, 0.1, 2.0)
+    
+#     mesh_pose_list = collect_mesh_pose_list(sim) 
+#     for idc in indices:
+#         pose = Transform.from_matrix(mesh_pose_list[idc][2])
+#         if idc == 0:
+#             mesh_path = mesh_pose_list[idc][0].replace(".obj",".urdf")
+#         else:
+#             mesh_path = find_urdf(mesh_pose_list[idc][0].replace("_visual.obj",".urdf"))
+#         sim_selected.world.load_urdf(mesh_path, pose, mesh_pose_list[idc][1][0])
+#     return sim_selected
+    
+    
+#     # for idc in indices:
+#     #     # if idc == 0:
+#     #     pose = Transform.from_matrix(obj_info[idc][2])
+#     #     if idc == 0:
+#     #         sim_selected.world.load_urdf(obj_info[idc][0].replace(".obj",".urdf"), pose, 0.6)
+#     #     else:
+#     #         sim_selected.world.load_urdf(find_urdf(obj_info[idc][0].replace(".obj",".urdf").replace('meshes_centered','acronym_urdfs_centered')), pose, 1)
+#     # return sim_selected
+
+import open3d as o3d
+import numpy as np
+import torch
 
 def points_equal(A, B, epsilon=1e-10):
     return abs(A[0] - B[0]) < epsilon and abs(A[1] - B[1]) < epsilon
 
 
+import open3d as o3d
+import numpy as np
+
+# def point_cloud_to_tsdf(points, voxel_size=0.3/40, depth=9, num_points=10000):
 def alpha_shape_mesh_reconstruct(np_points, alpha=0.5, mesh_fix=False, visualize=False):
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(np_points)
@@ -725,32 +1035,188 @@ def point_cloud_to_tsdf_dexycb(points, res):
     mask = (sdf_reshaped >= sdf_trunc) | (sdf_reshaped <= -sdf_trunc) 
 
     tsdf = (sdf_reshaped / sdf_trunc + 1) / 2
-    tsdf[mask] = 0
-    return tsdf
-
-def point_cloud_to_tsdf(points):
-    ## points -> mesh -> sdf -> tsdf
-    ## if the points is pytorch tensor, convert it to numpy
-    if isinstance(points, torch.Tensor):
-        points = points.detach().cpu().numpy()
-    if len(points.shape) == 3:
-        points = points.reshape(-1, 3)
-    mesh = alpha_shape_mesh_reconstruct(points, alpha=0.5, mesh_fix=False, visualize=False)
-    x, y, z = torch.meshgrid(torch.linspace(start=0, end=0.3 - 0.3 / 40, steps=40), torch.linspace(start=0, end=0.3 - 0.3 / 40, steps=40), torch.linspace(start=0, end=0.3 - 0.3 / 40, steps=40))
-    pos = torch.stack((x, y, z), dim=-1).float() # (1, 40, 40, 40, 3)
-    pos = pos.view(-1, 3)
-    f = SDF(mesh.vertices, mesh.triangles)
-    sdf = f(pos)
-    sdf_reshaped = sdf.reshape(40, 40, 40)
-    sdf_trunc = 4 * (0.3/40)
-
-    mask = (sdf_reshaped >= sdf_trunc) | (sdf_reshaped <= -sdf_trunc) 
-
-    tsdf = (sdf_reshaped / sdf_trunc + 1) / 2
     # tsdf = tsdf[mask]
     tsdf[mask] = 0
     return tsdf
 
+def point_cloud_to_mesh(points):
+    ## points -> mesh -> sdf -> tsdf
+    ## if the points is pytorch tensor, convert it to numpy
+    if isinstance(points, torch.Tensor):
+        points = points.detach().cpu().numpy()
+    if len(points.shape) == 3: 
+        points = points.reshape(-1, 3)
+    mesh = alpha_shape_mesh_reconstruct(points, alpha=0.5, mesh_fix=False, visualize=False)
+    return mesh
+
+def point_cloud_to_tsdf(points, return_mesh=False):
+    ## points -> mesh -> sdf -> tsdf
+    ## if the points is pytorch tensor, convert it to numpy
+    if isinstance(points, torch.Tensor):
+        points = points.detach().cpu().numpy()
+    if len(points.shape) == 3: 
+        points = points.reshape(-1, 3)
+    mesh = alpha_shape_mesh_reconstruct(points, alpha=0.5, mesh_fix=False, visualize=False)
+    # o3d.io.write_triangle_mesh("mesh.ply", mesh)
+    if return_mesh:
+        return mesh, mesh_to_tsdf(mesh)
+    else:
+        return mesh_to_tsdf(mesh)
+
+def compute_chamfer_and_iou(target_mesh, completed_mesh):
+    """Compute Chamfer distance and IoU between target mesh and completed mesh.
+    
+    Args:
+        target_mesh (trimesh.Trimesh): Ground truth target mesh
+        completed_mesh (trimesh.Trimesh): Completed mesh
+        mesh_path (Path, optional): Path to save visualization meshes
+        
+    Returns:
+        tuple: (chamfer_distance, iou)
+    """
+    # Sample points from mesh surfaces for Chamfer distance
+    gt_points, _ = trimesh.sample.sample_surface(target_mesh, 2048)
+    completed_points, _ = trimesh.sample.sample_surface(completed_mesh, 2048)
+    
+    evaluator = MeshEvaluator(n_points=2048)
+    
+    # Normalize points to [-0.5, 0.5] space
+    gt_points = (gt_points / 0.3) - 0.5
+    completed_points = (completed_points / 0.3) - 0.5
+    
+    # Compute Chamfer distance
+    eval_dict = evaluator.eval_pointcloud(
+        pointcloud=completed_points,
+        pointcloud_tgt=gt_points,
+        normals=None,
+        normals_tgt=None
+    )
+    chamfer_distance = eval_dict['chamfer-L1']
+    
+    # Normalize meshes to [-0.5, 0.5] space
+    target_mesh.vertices = target_mesh.vertices / 0.3 - 0.5
+    completed_mesh.vertices = completed_mesh.vertices / 0.3 - 0.5
+    
+    # Sample points for IoU calculation
+    points_iou, occ_target = sample_iou_points(
+        mesh_list=[target_mesh],
+        bounds=target_mesh.bounds,
+        num_point=100000,
+        uniform=False,
+        size=1.0
+    )
+    
+    # Compute IoU
+    metrics = evaluator.eval_mesh(
+        mesh=completed_mesh,
+        pointcloud_tgt=gt_points,
+        normals_tgt=None,
+        points_iou=points_iou,
+        occ_tgt=occ_target,
+        remove_wall=False
+    )
+    iou = metrics['iou']
+    
+    return chamfer_distance, iou
+
+# def point_cloud_to_tsdf(points):
+#     ## points -> mesh -> sdf -> tsdf
+#     ## if the points is pytorch tensor, convert it to numpy
+#     if isinstance(points, torch.Tensor):
+#         points = points.detach().cpu().numpy()
+#     if len(points.shape) == 3: 
+#         points = points.reshape(-1, 3)
+#     mesh = alpha_shape_mesh_reconstruct(points, alpha=0.5, mesh_fix=False, visualize=False)
+#     # o3d.io.write_triangle_mesh("mesh.ply", mesh)
+#     return mesh_to_tsdf(mesh)
+
+def mesh_to_tsdf(mesh, size=0.3, resolution=40):
+    """
+    Convert mesh to TSDF using SDF sampling.
+
+    Args:
+        mesh: trimesh.Trimesh object
+        size: Size of the workspace (float, default 0.3)
+        resolution: TSDF grid resolution (int, default 40)
+
+    Returns:
+        tsdf: TSDF grid (numpy array of shape [resolution, resolution, resolution])
+    """
+    # Create grid coordinates in [0, size)
+    lin = torch.linspace(start=0, end=size - size / resolution, steps=resolution)
+    x, y, z = torch.meshgrid(lin, lin, lin, indexing='ij')
+    pos = torch.stack((x, y, z), dim=-1).float()  # (resolution, resolution, resolution, 3)
+    pos = pos.view(-1, 3)
+
+    # Convert mesh vertices and faces to correct format
+    vertices = np.asarray(mesh.vertices, dtype=np.float32)
+    faces = np.asarray(mesh.triangles, dtype=np.uint32)
+
+    # Ensure faces are 2D array
+    if faces.ndim == 3:
+        faces = np.asarray(mesh.faces, dtype=np.uint32)
+
+    f = SDF(vertices, faces)
+    sdf = f(pos)
+    sdf_reshaped = sdf.reshape(resolution, resolution, resolution)
+    sdf_trunc = 4 * (size / resolution)
+
+    mask = (sdf_reshaped >= sdf_trunc) | (sdf_reshaped <= -sdf_trunc)
+
+    tsdf = (sdf_reshaped / sdf_trunc + 1) / 2
+    tsdf[mask] = 0
+    return tsdf
+
+# def mesh_to_tsdf(mesh, size=0.3, resolution=40):
+#     """
+#     Convert mesh to TSDF using the same method as in training.
+    
+#     Args:
+#         mesh: trimesh.Trimesh object
+#         size: Size of the workspace
+#         resolution: TSDF resolution
+        
+#     Returns:
+#         tsdf: TSDF grid
+#     """
+#     try:
+#         # Create camera and simulation setup
+#         camera = Camera.default()
+        
+#         # Create TSDF
+#         tsdf = create_tsdf(
+#             size=size,
+#             resolution=resolution,
+#             depth_imgs=None,  # We don't have depth images, using mesh directly
+#             intrinsic=camera.intrinsic,
+#             extrinsics=None
+#         )
+        
+#         # For mesh-based TSDF, we need to convert mesh to depth images
+#         # This is a simplified approach - in practice, you might want to render from multiple viewpoints
+        
+#         # Alternative: use mesh voxelization
+#         voxel_grid = mesh.voxelized(pitch=size/resolution)
+#         voxel_array = voxel_grid.matrix.astype(np.float32)
+        
+#         # Convert to TSDF format (distance field)
+#         # This is a simplified conversion - proper TSDF would need signed distance
+#         tsdf_grid = np.where(voxel_array > 0, 1.0, -1.0)
+        
+#         return tsdf_grid
+        
+#     except Exception as e:
+#         print(f"Error converting mesh to TSDF: {e}")
+#         return None
+
+
+
+    # return tsdf_volume
+
+
+# Example usage
+# pcd = o3d.io.read_point_cloud("your_point_cloud.ply")
+# tsdf_volume = point_cloud_to_tsdf(pcd)
 
 def point_cloud_to_tsdf_dexycb(points):
     ## points -> mesh -> sdf -> tsdf
@@ -771,6 +1237,7 @@ def point_cloud_to_tsdf_dexycb(points):
     mask = (sdf_reshaped >= sdf_trunc) | (sdf_reshaped <= -sdf_trunc) 
 
     tsdf = (sdf_reshaped / sdf_trunc + 1) / 2
+    # tsdf = tsdf[mask]
     tsdf[mask] = 0
     return tsdf
 
@@ -798,17 +1265,24 @@ def tsdf_to_ply(tsdf_voxels, ply_filename):
                 file.write(f'{point[0]} {point[1]} {point[2]}\n')
 
     # Identify occupied voxels
-    occupied_indices = np.argwhere(np.abs(tsdf_voxels) > 0.15)0.1, np.abs(tsdf_voxels) < 0.2))
+    # occupied_indices = np.argwhere(np.logical_and(np.abs(tsdf_voxels)  > 0.1, np.abs(tsdf_voxels) <= 0.5) )
+    # occupied_indices = 
+    occupied_indices = np.argwhere(np.abs(tsdf_voxels)  > 0.15)
+    # occupied_indices = np.argwhere(np.logical_and(np.abs(tsdf_voxels)  > 0.1, np.abs(tsdf_voxels) < 0.2))
 
     # Normalize coordinates to 0-1
+    # max_coords = np.array(tsdf_voxels.shape) - 1
+    # normalized_points = occupied_indices / max_coords
     normalized_points = occupied_indices * 0.7 /40
+
     # normalized_points = normalized_points / 0.3  - 0.5
 
     # Write normalized points to PLY
     write_ply(normalized_points, ply_filename)
     return normalized_points
 
-
+import open3d as o3d
+    
 def save_point_cloud_as_ply(point_cloud_data, ply_file_path):
     """
     Save a numpy array of 3D points as a PLY file.
@@ -827,8 +1301,7 @@ def save_point_cloud_as_ply(point_cloud_data, ply_file_path):
 
     # Save the point cloud as a PLY file
     o3d.io.write_point_cloud(ply_file_path, pcd)
-
-
+    
 def visualize_3d_points_and_save(point_cloud_data, path):
     """
     Visualize a numpy array of 3D points using Open3D and save the visualization
@@ -854,7 +1327,6 @@ def visualize_3d_points_and_save(point_cloud_data, path):
 
     # Create an Open3D point cloud object
     pcd = o3d.geometry.PointCloud()
-
     # Assign the points to the point cloud object
     pcd.points = o3d.utility.Vector3dVector(point_cloud_data)
 
@@ -876,7 +1348,7 @@ def visualize_3d_points_and_save(point_cloud_data, path):
 
     vis.destroy_window()
 
-
+# Function: visualize_tsdf
 def visualize_3d_points(point_cloud_data):
     """
     Visualize a numpy array of 3D points using Open3D.
@@ -926,6 +1398,11 @@ def visualize_tsdf(tsdf_grid, threshold = 0.5):
     plt.show()
 
 
+# Example usage:
+# visualize_tsdf(tsdf_grid)
+
+
+# Function: render_voxel_scene
 def render_voxel_scene(voxel_grid, intrinsic_matrix, extrinsic_matrix):
     """
     Renders a scene based on a 3D numpy array representing an occupancy grid, intrinsic and extrinsic matrices.
@@ -960,7 +1437,7 @@ def render_voxel_scene(voxel_grid, intrinsic_matrix, extrinsic_matrix):
 
     return image
 
-
+# Function: visualize_voxels
 def visualize_voxels(voxel_array):
     """
     Visualizes a 3D voxel array.
@@ -985,6 +1462,8 @@ def visualize_voxels(voxel_array):
 
     # Show the plot
     plt.show()
+    
+# Function: visualize_depth_map
 
 
 def visualize_depth_map(depth_map, colormap=None, save_path=None):
@@ -1007,7 +1486,11 @@ def visualize_depth_map(depth_map, colormap=None, save_path=None):
     else:
         plt.show()
 
+# Example usage
+# visualize_depth_map(your_depth_map_data)
 
+
+# Function: visualize_mask
 def visualize_mask(mask, colormap='jet', save_path=None):
     """
     Visualizes and optionally saves a segmentation mask.
@@ -1041,7 +1524,7 @@ def visualize_mask(mask, colormap='jet', save_path=None):
         plt.show()
 
 
-
+# Function: segmentation_to_colormap
 def segmentation_to_colormap(segmentation_mask):
     """
     Converts a segmentation mask to a color map. Pixels with ID 1 are red, others are white.
@@ -1058,7 +1541,7 @@ def segmentation_to_colormap(segmentation_mask):
 
     return colormap
     
-
+# Function: mesh_pose_list2collision_manager
 def mesh_pose_list2collision_manager(mesh_pose_list):
     collision_manager = trimesh.collision.CollisionManager()
     for mesh_path, scale, pose in mesh_pose_list:
@@ -1070,7 +1553,7 @@ def mesh_pose_list2collision_manager(mesh_pose_list):
         
     return collision_manager
 
-
+# Function: find_urdf
 def find_urdf(file_path):
     base_dir = os.path.dirname(file_path)
     filename = os.path.basename(file_path)
@@ -1078,7 +1561,7 @@ def find_urdf(file_path):
         if filename in urdf_path:
             return os.path.join(base_dir, urdf_path)
     
-
+# Function: sim_select_indices
 def sim_select_indices(sim, indices, obj_info, args):
     sim_selected = ClutterRemovalSim(args.urdf_root, args.size, args.scene, args.object_set, gui=False)  ## create a new sim
     
@@ -1100,7 +1583,27 @@ def sim_select_indices(sim, indices, obj_info, args):
             sim_selected.world.load_urdf(find_urdf(obj_info[idc][0].replace(".obj",".urdf").replace('meshes_centered','acronym_urdfs_centered')), pose, 1)
     return sim_selected
 
+# # Function: visualize_depth_map
+# def visualize_depth_map(depth_map, colormap=None):
+#     """
+#     Visualizes a depth map.
 
+#     Parameters:
+#     - depth_map: A 2D numpy array representing the depth map where each element is a depth value.
+#     - colormap: A string representing a matplotlib colormap (e.g., 'jet', 'viridis'). If None, will display in grayscale.
+
+#     Shows the depth map using plt.imshow() with the specified colormap.
+#     """
+#     # Normalize the depth map to be in the range [0, 1]
+#     normalized_depth_map = (depth_map - np.min(depth_map)) / (np.max(depth_map) - np.min(depth_map))
+    
+#     # Show the normalized depth map
+#     plt.imshow(normalized_depth_map, cmap=colormap)
+#     plt.colorbar()  # Optional: show a color bar indicating the depth scale
+#     plt.axis('off')  # Hide the axis
+#     plt.show()
+
+# Function: render_side_images
 def render_side_images(sim, n=1, random=False):
     height, width = sim.camera.intrinsic.height, sim.camera.intrinsic.width
     origin = Transform(Rotation.identity(), np.r_[sim.size / 2, sim.size / 2, sim.size / 3])
@@ -1180,6 +1683,30 @@ def render_side_images_sim(sim, n=1, random=False):
     return depth_imgs, seg_imgs, extrinsics
 
 
+# Function: render_images
+# def render_images(sim, n):
+#     height, width = sim.camera.intrinsic.height, sim.camera.intrinsic.width
+#     origin = Transform(Rotation.identity(), np.r_[sim.size / 2, sim.size / 2, 0.0])
+
+#     extrinsics = np.empty((n, 7), np.float32)
+#     depth_imgs = np.empty((n, height, width), np.float32)
+#     seg_imgs = np.empty((n, height, width), np.float32)
+
+#     for i in range(n):
+#         r = np.random.uniform(1.6, 2.4) * sim.size
+#         theta = np.random.uniform(0.0, np.pi / 4.0)
+#         phi = np.random.uniform(0.0, 2.0 * np.pi)
+
+#         extrinsic = camera_on_sphere(origin, r, theta, phi)
+#         depth_img, seg_img = sim.camera.render_with_seg(extrinsic)[1], sim.camera.render_with_seg(extrinsic)[2]
+
+#         extrinsics[i] = extrinsic.to_list()
+#         depth_imgs[i] = depth_img
+#         seg_imgs[i] = seg_img
+
+#     return depth_imgs, extrinsics
+
+
 def render_images(sim, n,segmentation=False):
     height, width = sim.camera.intrinsic.height, sim.camera.intrinsic.width
     origin = Transform(Rotation.identity(), np.r_[
@@ -1216,6 +1743,34 @@ def render_images(sim, n,segmentation=False):
         return depth_imgs, extrinsics
     
 
+# def render_images(sim, n, seg=False):
+#     height, width = sim.camera.intrinsic.height, sim.camera.intrinsic.width
+#     origin = Transform(Rotation.identity(), np.r_[
+#                        sim.size / 2, sim.size / 2, 0.0])
+
+#     extrinsics = np.empty((2*n, 7), np.float32)
+#     depth_imgs = np.empty((2*n, height, width), np.float32)
+
+#     for i in range(n):
+#         for j in range(2):
+#             r = 2 * sim.size
+#             theta = (j+1) * np.pi / 3.0
+#             phi = 2.0 * np.pi * i / n
+
+#             extrinsic = camera_on_sphere(origin, r, theta, phi)
+#             depth_img = sim.camera.render(extrinsic)[1]
+#             if seg == True:
+#                 seg_img = sim.camera.render_with_seg(extrinsic)[2]
+
+#             extrinsics[2*i+j] = extrinsic.to_list()
+#             depth_imgs[2*i+j] = depth_img
+            
+#     if seg == False:
+#         return depth_imgs, extrinsics
+#     else:
+#         return depth_imgs, extrinsics, seg_img
+
+# Function: construct_homogeneous_matrix
 def construct_homogeneous_matrix(rotation, translation):
     """
     Constructs a homogeneous transformation matrix.
@@ -1238,7 +1793,7 @@ def construct_homogeneous_matrix(rotation, translation):
     
     return H
 
-
+# Function: as_mesh
 def as_mesh(scene_or_mesh):
     """
     Convert a possible scene to a mesh.
@@ -1258,7 +1813,12 @@ def as_mesh(scene_or_mesh):
         mesh = scene_or_mesh
     return mesh
 
+# Importing necessary libraries and modules
+import trimesh
+# Importing necessary libraries and modules
+import numpy as np
 
+# Function: color_trimesh_scene
 def color_trimesh_scene(trimesh_scene, targ_idc, obj_idcs):
     colored_scene = trimesh.Scene()
     obj_count = 0
@@ -1291,6 +1851,8 @@ def color_trimesh_scene(trimesh_scene, targ_idc, obj_idcs):
     return colored_scene
 
 
+
+# Function: get_scene_from_mesh_pose_list_color
 def get_scene_from_mesh_pose_list_color(mesh_pose_list, targ_idc, scene_as_mesh=True, return_list=False):
     # create scene from meshes
     scene = trimesh.Scene()
@@ -1338,6 +1900,35 @@ def find_grasp_path(grasp_root, grasp_id):
             # print(f'Found grasp path: {grasp_path}')
     return grasp_path
 
+# Function: visualize_mask
+# def visualize_mask(mask, colormap='jet'):
+#     """
+#     Visualizes a segmentation mask as an image with each segment shown in a different color.
+
+#     Parameters:
+#     - mask: A 2D numpy array where each element is a segmentation label.
+#     - colormap: The colormap to use for visualizing the segmentation. Defaults to 'jet'.
+#     """
+#     # Handle the -1 labels as transparent in the visualization
+#     mask = mask + 1  # Increment to make -1 become 0, which will be mapped to transparent
+
+#     # Create a color map
+#     cmap = plt.get_cmap(colormap)
+#     colors = cmap(np.linspace(0, 1, np.max(mask) + 1))  # Generate enough colors
+#     colors[0] = np.array([0, 0, 0, 0])  # Set the first color (for label -1) as transparent
+
+#     # Create a new ListedColormap
+#     new_cmap = ListedColormap(colors)
+
+#     # Show the mask
+#     plt.imshow(mask, cmap=new_cmap)
+#     plt.axis('off')  # Hide the axis
+#     plt.show()
+
+# Example usage:
+# Assuming 'mask' is your 2D numpy array with segmentation labels starting from -1
+# visualize_mask(mask)
+
 def collect_mesh_pose_dict(sim, exclude_plane=False):
     mesh_pose_dict = {}
     for uid in sim.world.bodies.keys():
@@ -1358,7 +1949,7 @@ def collect_mesh_pose_dict(sim, exclude_plane=False):
     return mesh_pose_dict
 
 
-
+# Function: collect_mesh_pose_list
 def collect_mesh_pose_list(sim, exclude_plane=False):
     mesh_pose_list = []
     for uid in sim.world.bodies.keys():
@@ -1378,7 +1969,7 @@ def collect_mesh_pose_list(sim, exclude_plane=False):
         mesh_pose_list.append((mesh_path, scale, pose))
     return mesh_pose_list
 
-
+# Function: extract_mesh_id
 def extract_mesh_id(path):
     """
     Extracts the mesh_id from the given path.
@@ -1401,13 +1992,13 @@ def extract_mesh_id(path):
     
     return mesh_id
 
-
+# Function: get_occlusion_from_hdf5
 def get_occlusion_from_hdf5(filename):
     with h5py.File(filename, 'r') as f:
         cluttered_occ_level = f['cluttered_occ_level'][()]
     return cluttered_occ_level
 
-
+# Function: count_cluttered_bins
 def count_cluttered_bins(root_folder):
     scene_info_path = os.path.join(root_folder)                                                                     
     cluttered_bin_counts = [0] * 10
@@ -1425,7 +2016,7 @@ def count_cluttered_bins(root_folder):
     return cluttered_bin_counts
 
 
-
+# Function: find_unique_grasps
 def find_unique_grasps(pairwise_grasps, cluttered_grasps):
     # Step 1: Reshape to 2D
     cluttered_flat = cluttered_grasps.reshape(cluttered_grasps.shape[0], -1)
@@ -1445,6 +2036,42 @@ def find_unique_grasps(pairwise_grasps, cluttered_grasps):
     return result
 
 
+# Function: create_grippers_scene
+# def create_grippers_scene(scene_grasps):
+#     """
+#     Visualizes table top scene with grasps and saves the visualization to an image file.
+
+#     Arguments:
+#         scene_grasps {np.ndarray} -- Nx4x4 grasp transforms
+#         save_path {str} -- Path to save the visualization image
+#     """
+#     print('Visualizing scene and grasps.. takes time')
+    
+#     gripper_marker = create_gripper_marker(color=[0, 255, 0])
+#     gripper_markers = [gripper_marker.copy().apply_transform(t) for t in scene_grasps]
+
+#     return trimesh.Scene(gripper_markers)
+
+
+# Function: create_pairwise_grippers_scene
+# def create_pairwise_grippers_scene(pairwise_grasps, cluttered_grasps):
+#     """
+#     Visualizes table top scene with grasps and saves the visualization to an image file.
+
+#     Arguments:
+#         scene_grasps {np.ndarray} -- Nx4x4 grasp transforms
+#         save_path {str} -- Path to save the visualization image
+#     """
+#     print('Visualizing scene and grasps.. takes time')
+    
+#     gripper_marker = create_gripper_marker(color=[255, 255, 0]) # yellow
+#     scene_grasps = find_unique_grasps(pairwise_grasps, cluttered_grasps)
+#     gripper_markers = [gripper_marker.copy().apply_transform(t) for t in scene_grasps]
+
+    
+
+    return trimesh.Scene(gripper_markers)
+
 def create_mesh_from_tsdf(tsdf_grid, threshold, save_path):
     """
     Create a mesh from a TSDF grid and save it to a file.
@@ -1462,7 +2089,7 @@ def create_mesh_from_tsdf(tsdf_grid, threshold, save_path):
     # Save the mesh to the specified path
     mesh.export(save_path)
 
-
+# Function: read_from_hdf5
 def read_from_hdf5(filename):
     with h5py.File(filename, 'r') as f:
         grasp_paths = [n.decode('ascii') for n in f['grasp_paths']]
@@ -1496,7 +2123,7 @@ def read_from_hdf5(filename):
                         [0.5, 0.6, 0.6], [0.6, 0.6, 0.6], np.eye(4), 0.02)
         
 
-
+# Function: convert_mesh_file_path
 def convert_mesh_file_path(file_path):
     """
     Convert a file path from 'meshes/PictureFrame/1049af17ad48aaeb6d41c42f7ade8c8.obj' to 'meshes/1049af17ad48aaeb6d41c42f7ade8c8.obj'.
@@ -1522,7 +2149,7 @@ def convert_mesh_file_path(file_path):
 
     return new_file_path
 
-
+# Function: load_grasps_h5
 def load_grasps_h5(root_folder):
     """
     Load grasps into memory
@@ -1612,6 +2239,7 @@ def generate_robot_xml(name, visual_mesh_filename, collision_mesh_filename, mass
 
     return xml
 
+# Function: save_robot_xml
 def save_robot_xml(xml_string, directory, filename):
     """
     Save an XML string to a file in a directory.
@@ -1627,7 +2255,7 @@ def save_robot_xml(xml_string, directory, filename):
     file_path = os.path.join(directory, f'{filename}.urdf')
     with open(file_path, 'w') as f:
         f.write(xml_string)
-
+# Function: load_grasps
 def load_grasps(root_folder, data_splits, splits=['train'], min_pos_grasps=1):
     """
     Load grasps into memory
@@ -1661,6 +2289,7 @@ def load_grasps(root_folder, data_splits, splits=['train'], min_pos_grasps=1):
 
     return grasp_infos
 
+# Function: load_splits
 def load_splits(root_folder):
     """
     Load splits of training and test objects
@@ -1680,3 +2309,824 @@ def load_splits(root_folder):
         split_dict[category]['train'] = [obj_p.replace('.json', '.h5') for obj_p in splits['train']]
         split_dict[category]['test'] = [obj_p.replace('.json', '.h5') for obj_p in splits['test']]
     return split_dict
+
+
+
+# class SceneInfo:
+# # Function: __init__
+#     def __init__(self, grasp_paths, obj_transforms, obj_scales, obj_num, targ_idc, pairwise_scene_objects_idcs, pairwise_scene_idcs,
+#                  cluttered_scene_filtered_grasps, 
+#                  single_object_grasps_no_scene, 
+#                  single_object_grasps_scene,
+#                 pairwise_scene_filtered_grasps,
+#                 cluttered_occ_level,
+#                 pairwise_occ_level,
+#                 supp_obj_path, supp_pose, supp_scale,
+#                 # table_dims, table_support, table_pose, lower_table,
+#                 depth_cluttered, depth_single, depth_pairwise_list,camera_pose
+                
+#                 ):
+
+#         self.grasp_paths = grasp_paths
+#         self.obj_transforms = obj_transforms
+#         self.obj_scales = obj_scales
+#         self.obj_num = obj_num
+#         self.targ_idc = targ_idc
+#         self.pairwise_scene_objects_idcs = pairwise_scene_objects_idcs
+#         self.pairwise_scene_idcs = pairwise_scene_idcs
+#         self.cluttered_scene_filtered_grasps = cluttered_scene_filtered_grasps
+#         self.single_object_grasps_no_scene = single_object_grasps_no_scene
+#         self.single_object_grasps_scene = single_object_grasps_scene
+#         self.pairwise_scene_filtered_grasps = pairwise_scene_filtered_grasps
+#         self.cluttered_occ_level = cluttered_occ_level
+#         self.pairwise_occ_level = pairwise_occ_level
+
+
+#         # self._table_dims = [0.5, 0.6, 0.6]
+#         # self._table_support = [0.6, 0.6, 0.6]
+#         # self._table_pose = np.eye(4)
+#         # self._lower_table = 0.02
+        
+#         # self._table_dims = table_dims
+#         # self._table_support = table_support
+#         # self._table_pose = table_pose
+#         # self._lower_table = lower_table
+        
+        
+#         # self._table_pose[2, 3] -= self._lower_table
+#         # self.table_mesh = trimesh.creation.box(self._table_dims)
+#         # self.table_mesh.apply_transform(self._table_pose)
+#         # self.table_support = trimesh.creation.box(self._table_support)
+#         # self.table_support.apply_transform(self._table_pose)
+
+#         self.depth_cluttered = depth_cluttered
+#         self.depth_single = depth_single
+#         self.depth_pairwise_list = depth_pairwise_list
+#         self.camera_pose = camera_pose
+
+#         self._objects = OrderedDict()
+#         self._poses = OrderedDict()
+
+#         plane_mesh = trimesh.load(supp_obj_path.replace('.urdf', '.obj'))
+#         plane_mesh.apply_scale(supp_scale)
+    
+#         self._objects['plane'] = plane_mesh
+#         self._poses['plane'] = supp_pose
+        
+#         for i in range(self.obj_num):
+#             self._objects[self.grasp_paths[i]] = load_mesh(os.path.join('/mnt/hdd/GraspInClutter/acronym', 'grasps', self.grasp_paths[i]), '/mnt/hdd/GraspInClutter/acronym')
+#             mesh_mean =  np.mean(self._objects[self.grasp_paths[i]].vertices, 0, keepdims=True)
+#             self._objects[self.grasp_paths[i]].vertices -= mesh_mean    ## make the objects centroid at the origin
+#             self._poses[self.grasp_paths[i]] = self.obj_transforms[i] 
+        
+# # Function: scene_info_as_trimesh_scene
+#     def scene_info_as_trimesh_scene(self, targ_idc, obj_idcs):
+#         """Return trimesh scene representation.
+
+#         Returns:
+#             trimesh.Scene: Scene representation.
+#         """
+#         trimesh_scene = trimesh.scene.Scene()
+#         obj_count = 0
+#         for obj_id, obj_mesh in self._objects.items():
+#             if obj_count in obj_idcs:
+#                 if obj_id == 'table':
+#                     obj_mesh.visual.vertex_colors = [128, 128, 128, 255]    ## grey
+#                     trimesh_scene.add_geometry(
+#                         obj_mesh,
+#                         node_name=obj_id,
+#                         geom_name=obj_id,
+#                         transform=self._poses[obj_id],
+#                     )
+#                 if obj_count == targ_idc  and obj_count != 0:
+#                     obj_mesh.visual.vertex_colors = [255, 0, 0, 255] ## red
+#                     trimesh_scene.add_geometry(
+#                         obj_mesh,
+#                         node_name=obj_id,
+#                         geom_name=obj_id,
+#                         transform=self._poses[obj_id],
+#                     )
+#                 if obj_count != targ_idc and obj_id != 'table':
+#                     obj_mesh.visual.vertex_colors = [0, 0, 255, 255]    ## blue
+#                     trimesh_scene.add_geometry(
+#                         obj_mesh,
+#                         node_name=obj_id,
+#                         geom_name=obj_id,
+#                         transform=self._poses[obj_id],
+#                     )
+#             obj_count += 1
+            
+#         return trimesh_scene
+    
+# # Function: save_to_hdf5
+#     def save_to_hdf5(self, file_name):
+#         with h5py.File(file_name, 'w') as f:
+#             # Strings and arrays need special treatment
+#             # string_dt = h5py.special_dtype(vlen=str)
+#             # f.create_dataset("obj_paths", (len(self.obj_paths),), dtype=string_dt, data=self.obj_paths)
+#             f.create_dataset("grasp_paths", data = [n.encode("ascii", "ignore") for n in self.grasp_paths])
+#             f.create_dataset("obj_transforms", data=self.obj_transforms)
+#             f.create_dataset("obj_scales", data=self.obj_scales)
+#             f.create_dataset("obj_num", data=self.obj_num)
+#             f.create_dataset("targ_idc", data=self.targ_idc)
+#             f.create_dataset("pairwise_scene_objects_idcs", data=self.pairwise_scene_objects_idcs)
+#             f.create_dataset("cluttered_scene_filtered_grasps", data=self.cluttered_scene_filtered_grasps)
+            
+#             f.create_dataset("single_object_grasps_no_scene", data=self.single_object_grasps_no_scene)
+
+#             f.create_dataset("single_object_grasps_scene", data=self.single_object_grasps_scene)
+
+#             # f.create_dataset("fail_idcs",data= self.fail_idcs)
+
+#             f.create_dataset("pairwise_scene_filtered_grasps", data=self.pairwise_scene_filtered_grasps)
+
+#             # f.create_dataset("fail_ratio", data=self.fail_ratio)
+#             f.create_dataset("pairwise_scene_idcs",data= self.pairwise_scene_idcs)
+
+
+#             f.create_dataset("cluttered_occ_level",data= self.cluttered_occ_level)
+#             f.create_dataset("pairwise_occ_level",data= self.pairwise_occ_level)
+
+#             f.create_dataset("depth_cluttered", data =self.depth_cluttered )
+#             f.create_dataset("depth_single", data =self.depth_single )
+#             f.create_dataset("depth_pairwise_list", data =self.depth_pairwise_list )
+#             f.create_dataset("camera_pose", data =self.camera_pose )
+
+    
+# # Function: visualize_SceneInfo
+#     def visualize_SceneInfo(self):
+#         print("1")
+#         env_scene = trimesh.scene.Scene()
+#         base_dir = '/mnt/hdd/GraspInClutter/acronym'
+#         # print(self.obj_transforms)
+#         # print(self.grasp_paths)
+
+#         env_scene.add_geometry(
+#                         self.table_mesh,
+#                         node_name = 'table',
+#                         geom_name = 'table',
+#                         transform=self._table_pose,
+#                     )
+        
+#         obj_count = 0
+#         for i in range(self.obj_num):
+#             # Load mesh from the object path
+#             mesh = load_mesh(os.path.join('/mnt/hdd/GraspInClutter/acronym', 'grasps', self.grasp_paths[i]), '/mnt/hdd/GraspInClutter/acronym')
+            
+#             if obj_count != self.targ_idc:
+#                 mesh.visual.vertex_colors = [0, 0, 255, 255]
+#                 env_scene.add_geometry(
+#                             mesh,
+#                             node_name = self.grasp_paths[i],
+#                             geom_name =self.grasp_paths[i] ,
+#                             transform=self.obj_transforms[i],
+#                         )
+            
+#             elif obj_count == self.targ_idc:
+#                 mesh.visual.vertex_colors = [255, 0, 0, 255]
+#                 env_scene.add_geometry(
+#                             mesh,
+#                             node_name = self.grasp_paths[i],
+#                             geom_name =self.grasp_paths[i] ,
+#                             transform=self.obj_transforms[i],
+#                         )
+#             obj_count += 1
+
+#         env_scene = self.scene_info_as_trimesh_scene(self.targ_idc+1, range(self.obj_num + 1))
+#         env_scene.show()
+#         cluttered_scene = trimesh.scene.scene.append_scenes([env_scene,create_grippers_scene(self.cluttered_scene_filtered_grasps) ])
+#         cluttered_scene.show()
+#         print("1")
+
+def compute_multi_object_completion_metrics(gt_meshes, pred_meshes, num_samples=10000):
+    """
+    Compute evaluation metrics for multi-object reconstruction using the existing compute_chamfer_and_iou function
+    
+    Args:
+        gt_meshes: List of Ground Truth meshes (reference)
+        pred_meshes: List of predicted meshes (already aligned if using GAPS)
+        num_samples: Number of sample points for metric computation
+        
+    Returns:
+        Dictionary containing various metrics and aligned scenes
+    """
+    print(f"GT scene contains {len(gt_meshes)} objects")
+    print(f"Predicted scene contains {len(pred_meshes)} objects")
+    
+    if len(gt_meshes) == 0 or len(pred_meshes) == 0:
+        print("Warning: No valid meshes found")
+        return {
+            'chamfer_distance': float('inf'),
+            'iou': 0.0,
+            'chamfer_distance_std': 0.0,
+            'iou_std': 0.0,
+            'per_object_cds': [],
+            'per_object_ious': [],
+            'per_object_b_ious': [],
+            'scene_iou': 0.0
+        }
+    
+    # Use the provided meshes directly (alignment already done in eval.py)
+    aligned_pred_meshes = pred_meshes
+    
+    # Step 4: Compute per-object metrics
+    print("Step 4: Computing per-object metrics...")
+    per_object_cds = []
+    per_object_ious = []
+    per_object_b_ious = []
+    
+    # For each predicted object, find best matching GT object and compute metrics
+    for i, pred_mesh in enumerate(aligned_pred_meshes):
+        best_cd = float('inf')
+        best_iou = 0.0
+        best_b_iou = 0.0
+        best_gt_idx = -1
+        
+        for j, gt_mesh in enumerate(gt_meshes):
+            try:
+                # Use the existing compute_chamfer_and_iou function
+                cd, iou = compute_chamfer_and_iou(gt_mesh, pred_mesh)
+                
+                # Optional: Save meshes for debugging
+                # gt_mesh.export(f"gt_{j}.ply", include_attributes=False)
+                # pred_mesh.export(f"pred_{i}.ply", include_attributes=False)
+                
+                if cd < best_cd:
+                    best_cd = cd
+                    best_iou = iou
+                    best_gt_idx = j
+                    
+            except Exception as e:
+                print(f"Error computing metrics for pred object {i} and GT object {j}: {e}")
+                continue
+        
+        if best_gt_idx >= 0:
+            per_object_cds.append(best_cd)
+            per_object_ious.append(best_iou)
+            per_object_b_ious.append(best_b_iou)
+            print(f"Pred object {i} matched with GT object {best_gt_idx}: CD={best_cd:.6f}, IoU={best_iou:.6f}, B-IoU={best_b_iou:.6f}")
+        else:
+            per_object_cds.append(float('inf'))
+            per_object_ious.append(0.0)
+            per_object_b_ious.append(0.0)
+            print(f"No match found for pred object {i}")
+    
+    # Compute scene-level metrics
+    if per_object_cds:
+        scene_cd = np.mean(per_object_cds)
+        scene_iou = np.mean(per_object_ious)
+        scene_cd_std = np.std(per_object_cds)
+        scene_iou_std = np.std(per_object_ious)
+    else:
+        scene_cd = float('inf')
+        scene_iou = 0.0
+        scene_cd_std = 0.0
+        scene_iou_std = 0.0
+    
+    # Create metrics dictionary
+    metrics = {
+        'chamfer_distance': float(scene_cd),
+        'iou': float(scene_iou),
+        'chamfer_distance_std': float(scene_cd_std),
+        'iou_std': float(scene_iou_std),
+        'per_object_cds': per_object_cds,
+        'per_object_ious': per_object_ious,
+        'per_object_b_ious': per_object_b_ious,
+        'scene_iou': float(scene_iou)
+    }
+    
+    # Create aligned scenes for compatibility
+    aligned_gt_scene = trimesh.Scene(gt_meshes)
+    aligned_pred_scene = trimesh.Scene(aligned_pred_meshes)
+    
+    # Store aligned scenes for later use
+    metrics['aligned_gt_scene'] = aligned_gt_scene
+    metrics['aligned_pred_scene'] = aligned_pred_scene
+    
+    # Create merged meshes for compatibility
+    if len(gt_meshes) > 1:
+        metrics['aligned_gt_merged'] = trimesh.util.concatenate(gt_meshes)
+    else:
+        metrics['aligned_gt_merged'] = gt_meshes[0] if gt_meshes else None
+    
+    if len(aligned_pred_meshes) > 1:
+        metrics['aligned_pred_merged'] = trimesh.util.concatenate(aligned_pred_meshes)
+    else:
+        metrics['aligned_pred_merged'] = aligned_pred_meshes[0] if aligned_pred_meshes else None
+    
+    print(f"Final scene metrics: CD={metrics['chamfer_distance']:.6f}±{metrics['chamfer_distance_std']:.6f}, "
+          f"IoU={metrics['iou']:.6f}±{metrics['iou_std']:.6f}")
+    
+    return metrics
+
+def compute_penetration_level(mesh_list, merged_mesh, size=0.3, resolution=40):
+    """
+    Compute penetration level between merged mesh and individual meshes.
+    
+    Penetration level = 1 - (merged_mesh_internal_points / sum_of_individual_mesh_internal_points)
+    
+    Args:
+        mesh_list: List of trimesh.Trimesh objects
+        merged_mesh: Single merged trimesh.Trimesh object
+        size: Size of the workspace (float, default 0.3)
+        resolution: TSDF grid resolution (int, default 40)
+        
+    Returns:
+        float: Penetration level (0 = no penetration, 1 = complete overlap)
+    """
+    if not mesh_list or merged_mesh is None:
+        print("Warning: Invalid input meshes")
+        return 0.0
+    
+    print(f"Computing penetration level for {len(mesh_list)} individual meshes vs 1 merged mesh")
+    
+    try:
+        # Convert merged mesh to TSDF
+        merged_tsdf = mesh_to_tsdf(merged_mesh, size, resolution)
+        
+        # Count internal points in merged mesh (TSDF > 0.5 indicates inside)
+        merged_internal_points = np.sum(merged_tsdf > 0.5)
+        print(f"Merged mesh internal points: {merged_internal_points}")
+        
+        # Convert each individual mesh to TSDF and count internal points
+        individual_internal_points_sum = 0
+        
+        for i, mesh in enumerate(mesh_list):
+            try:
+                individual_tsdf = mesh_to_tsdf(mesh, size, resolution)
+                individual_internal_points = np.sum(individual_tsdf > 0.5)
+                individual_internal_points_sum += individual_internal_points
+                print(f"Mesh {i} internal points: {individual_internal_points}")
+            except Exception as e:
+                print(f"Error processing mesh {i}: {e}")
+                continue
+        
+        print(f"Sum of individual mesh internal points: {individual_internal_points_sum}")
+        
+        # Calculate penetration level
+        if individual_internal_points_sum > 0:
+            penetration_level = 1 - (merged_internal_points / individual_internal_points_sum)
+            penetration_level = max(0.0, min(1.0, penetration_level))  # Clamp to [0, 1]
+        else:
+            penetration_level = 0.0
+            print("Warning: No internal points found in individual meshes")
+        
+        print(f"Penetration level: {penetration_level:.6f}")
+        return float(penetration_level)
+        
+    except Exception as e:
+        print(f"Error computing penetration level: {e}")
+        return 0.0
+
+
+def compute_penetration_level_detailed(mesh_list, merged_mesh, size=0.3, resolution=40):
+    """
+    Compute detailed penetration analysis between merged mesh and individual meshes.
+    
+    Args:
+        mesh_list: List of trimesh.Trimesh objects
+        merged_mesh: Single merged trimesh.Trimesh object
+        size: Size of the workspace (float, default 0.3)
+        resolution: TSDF grid resolution (int, default 40)
+        
+    Returns:
+        dict: Detailed penetration analysis including per-mesh breakdown
+    """
+    if not mesh_list or merged_mesh is None:
+        print("Warning: Invalid input meshes")
+        return {
+            'penetration_level': 0.0,
+            'merged_internal_points': 0,
+            'individual_internal_points_sum': 0,
+            'per_mesh_internal_points': [],
+            'per_mesh_penetration': [],
+            'overlap_ratio': 0.0
+        }
+    
+    print(f"Computing detailed penetration analysis for {len(mesh_list)} individual meshes vs 1 merged mesh")
+    
+    try:
+        # Convert merged mesh to TSDF
+        merged_tsdf = mesh_to_tsdf(merged_mesh, size, resolution)
+        merged_internal_points = np.sum(merged_tsdf > 0.5)
+        
+        # Process individual meshes
+        per_mesh_internal_points = []
+        per_mesh_penetration = []
+        
+        for i, mesh in enumerate(mesh_list):
+            try:
+                individual_tsdf = mesh_to_tsdf(mesh, size, resolution)
+                individual_internal_points = np.sum(individual_tsdf > 0.5)
+                per_mesh_internal_points.append(individual_internal_points)
+                
+                # Calculate overlap with merged mesh
+                overlap = np.sum((individual_tsdf > 0.5) & (merged_tsdf > 0.5))
+                if individual_internal_points > 0:
+                    mesh_penetration = 1 - (overlap / individual_internal_points)
+                else:
+                    mesh_penetration = 0.0
+                per_mesh_penetration.append(mesh_penetration)
+                
+                print(f"Mesh {i}: internal={individual_internal_points}, overlap={overlap}, penetration={mesh_penetration:.6f}")
+                
+            except Exception as e:
+                print(f"Error processing mesh {i}: {e}")
+                per_mesh_internal_points.append(0)
+                per_mesh_penetration.append(0.0)
+        
+        individual_internal_points_sum = sum(per_mesh_internal_points)
+        
+        # Calculate overall penetration level
+        if individual_internal_points_sum > 0:
+            penetration_level = 1 - (merged_internal_points / individual_internal_points_sum)
+            penetration_level = max(0.0, min(1.0, penetration_level))
+        else:
+            penetration_level = 0.0
+        
+        # Calculate overlap ratio
+        if individual_internal_points_sum > 0:
+            overlap_ratio = merged_internal_points / individual_internal_points_sum
+        else:
+            overlap_ratio = 0.0
+        
+        results = {
+            'penetration_level': float(penetration_level),
+            'merged_internal_points': int(merged_internal_points),
+            'individual_internal_points_sum': int(individual_internal_points_sum),
+            'per_mesh_internal_points': per_mesh_internal_points,
+            'per_mesh_penetration': per_mesh_penetration,
+            'overlap_ratio': float(overlap_ratio)
+        }
+        
+        print(f"Overall penetration level: {penetration_level:.6f}")
+        print(f"Overlap ratio: {overlap_ratio:.6f}")
+        
+        return results
+        
+    except Exception as e:
+        print(f"Error computing detailed penetration analysis: {e}")
+        return {
+            'penetration_level': 0.0,
+            'merged_internal_points': 0,
+            'individual_internal_points_sum': 0,
+            'per_mesh_internal_points': [],
+            'per_mesh_penetration': [],
+            'overlap_ratio': 0.0
+        }
+
+def mesh_to_tsdf_messy_kitchen(mesh, size=0.7, resolution=40):
+    """
+    Convert mesh to TSDF for messy kitchen scenarios with different normalization.
+    
+    This function uses a larger workspace size (0.7) and different normalization
+    approach compared to the original mesh_to_tsdf function.
+    
+    Args:
+        mesh: trimesh.Trimesh object
+        size: Size of the workspace (float, default 0.7 for messy kitchen)
+        resolution: TSDF grid resolution (int, default 40)
+
+    Returns:
+        tsdf: TSDF grid (numpy array of shape [resolution, resolution, resolution])
+    """
+    # Create grid coordinates in [0, size) for messy kitchen
+    lin = torch.linspace(start=0, end=size - size / resolution, steps=resolution)
+    x, y, z = torch.meshgrid(lin, lin, lin, indexing='ij')
+    pos = torch.stack((x, y, z), dim=-1).float()  # (resolution, resolution, resolution, 3)
+    pos = pos.view(-1, 3)
+
+    # Convert mesh vertices and faces to correct format
+    vertices = np.asarray(mesh.vertices, dtype=np.float32)
+    faces = np.asarray(mesh.triangles, dtype=np.uint32)
+
+    # Ensure faces are 2D array
+    if faces.ndim == 3:
+        faces = np.asarray(mesh.faces, dtype=np.uint32)
+
+    f = SDF(vertices, faces)
+    sdf = f(pos)
+    sdf_reshaped = sdf.reshape(resolution, resolution, resolution)
+    sdf_trunc = 4 * (size / resolution)
+
+    mask = (sdf_reshaped >= sdf_trunc) | (sdf_reshaped <= -sdf_trunc)
+
+    tsdf = (sdf_reshaped / sdf_trunc + 1) / 2
+    tsdf[mask] = 0
+    return tsdf
+
+
+def compute_chamfer_and_iou_messy_kitchen(target_mesh, completed_mesh):
+    """Compute Chamfer distance, IoU, and B-IoU between target mesh and completed mesh for messy kitchen scenarios.
+    
+    This function directly uses the input meshes without any normalization.
+    
+    Args:
+        target_mesh (trimesh.Trimesh): Ground truth target mesh
+        completed_mesh (trimesh.Trimesh): Completed mesh
+        
+    Returns:
+        tuple: (chamfer_distance, iou, b_iou)
+    """
+    # Sample points from mesh surfaces for Chamfer distance
+    gt_points, _ = trimesh.sample.sample_surface(target_mesh, 2048)
+    completed_points, _ = trimesh.sample.sample_surface(completed_mesh, 2048)
+    
+    evaluator = MeshEvaluator(n_points=2048)
+    
+    # Compute Chamfer distance
+    eval_dict = evaluator.eval_pointcloud(
+        pointcloud=completed_points,
+        pointcloud_tgt=gt_points,
+        normals=None,
+        normals_tgt=None
+    )
+    chamfer_distance = eval_dict['chamfer-L1']
+    fscore = eval_dict['f-score']
+    
+    # Sample points for IoU calculation
+    points_iou, occ_target = sample_iou_points(
+        mesh_list=[target_mesh],
+        bounds=target_mesh.bounds,
+        num_point=100000,
+        uniform=False,
+        size=1.0
+    )
+    
+    # Compute IoU
+    metrics = evaluator.eval_mesh(
+        mesh=completed_mesh,
+        pointcloud_tgt=gt_points,
+        normals_tgt=None,
+        points_iou=points_iou,
+        occ_tgt=occ_target,
+        remove_wall=False
+    )
+    iou = metrics['iou']
+    
+    # Compute B-IoU
+    b_iou = compute_bounding_box_iou(target_mesh, completed_mesh)
+    
+    return chamfer_distance, iou, b_iou, fscore
+
+
+def compute_multi_object_completion_metrics_messy_kitchen(gt_meshes, pred_meshes, num_samples=10000):
+    """
+    Compute evaluation metrics for multi-object reconstruction in messy kitchen scenarios.
+    
+    This function uses scene-level normalization and the messy kitchen specific evaluation functions.
+    
+    Args:
+        gt_meshes: List of Ground Truth meshes (reference)
+        pred_meshes: List of predicted meshes (already aligned if using GAPS)
+        num_samples: Number of sample points for metric computation
+        
+    Returns:
+        Dictionary containing various metrics and aligned scenes
+    """
+    print(f"GT scene contains {len(gt_meshes)} objects")
+    print(f"Predicted scene contains {len(pred_meshes)} objects")
+    
+    if len(gt_meshes) == 0 or len(pred_meshes) == 0:
+        print("Warning: No valid meshes found")
+        return {
+            'chamfer_distance': float('inf'),
+            'iou': 0.0,
+            'chamfer_distance_std': 0.0,
+            'iou_std': 0.0,
+            'per_object_cds': [],
+            'per_object_ious': [],
+            'per_object_b_ious': [],
+            'per_object_fscores': [],
+            'scene_iou': 0.0
+        }
+    
+    # Use the provided meshes directly (alignment already done in eval.py)
+    aligned_pred_meshes = pred_meshes
+    
+    # Step 4: Compute per-object metrics using messy kitchen specific functions
+    print("Step 4: Computing per-object metrics for messy kitchen scenario...")
+    per_object_cds = []
+    per_object_ious = []
+    per_object_b_ious = []
+    per_object_fscores = []
+    
+    # For each predicted object, find best matching GT object and compute metrics
+    for i, pred_mesh in enumerate(aligned_pred_meshes):
+        best_cd = float('inf')
+        best_iou = 0.0
+        best_b_iou = 0.0
+        best_fscore = 0.0
+        best_gt_idx = -1
+        
+        for j, gt_mesh in enumerate(gt_meshes):
+            try:
+                # Use the messy kitchen specific compute_chamfer_and_iou function
+                cd, iou, b_iou, fscore = compute_chamfer_and_iou_messy_kitchen(gt_mesh, pred_mesh)
+                
+                # Optional: Save meshes for debugging
+                # gt_mesh.export(f"gt_{j}.ply", include_attributes=False)
+                # pred_mesh.export(f"pred_{i}.ply", include_attributes=False)
+                
+                if cd < best_cd:
+                    best_cd = cd
+                    best_iou = iou
+                    best_b_iou = b_iou
+                    best_fscore = fscore
+                    best_gt_idx = j
+                    
+            except Exception as e:
+                print(f"Error computing metrics for pred object {i} and GT object {j}: {e}")
+                continue
+        
+        if best_gt_idx >= 0:
+            per_object_cds.append(best_cd)
+            per_object_ious.append(best_iou)
+            per_object_b_ious.append(best_b_iou)
+            per_object_fscores.append(best_fscore)
+            print(f"Pred object {i} matched with GT object {best_gt_idx}: CD={best_cd:.6f}, IoU={best_iou:.6f}, B-IoU={best_b_iou:.6f}, F-score={best_fscore:.6f}")
+        else:
+            per_object_cds.append(float('inf'))
+            per_object_ious.append(0.0)
+            per_object_b_ious.append(0.0)
+            per_object_fscores.append(0.0)
+            print(f"No match found for pred object {i}")
+    
+    # Compute scene-level metrics
+    if per_object_cds:
+        scene_cd = np.mean(per_object_cds)
+        scene_iou = np.mean(per_object_ious)
+        scene_b_iou = np.mean(per_object_b_ious)
+        scene_fscore = np.mean(per_object_fscores)
+        scene_cd_std = np.std(per_object_cds)
+        scene_iou_std = np.std(per_object_ious)
+        scene_b_iou_std = np.std(per_object_b_ious)
+        scene_fscore_std = np.std(per_object_fscores)
+    else:
+        scene_cd = float('inf')
+        scene_iou = 0.0
+        scene_b_iou = 0.0
+        scene_fscore = 0.0
+        scene_cd_std = 0.0
+        scene_iou_std = 0.0
+        scene_b_iou_std = 0.0
+        scene_fscore_std = 0.0
+    
+    # Create metrics dictionary
+    metrics = {
+        'chamfer_distance': float(scene_cd),
+        'iou': float(scene_iou),
+        'chamfer_distance_std': float(scene_cd_std),
+        'iou_std': float(scene_iou_std),
+        'per_object_cds': per_object_cds,
+        'per_object_ious': per_object_ious,
+        'per_object_b_ious': per_object_b_ious,
+        'per_object_fscores': per_object_fscores,
+        'scene_iou': float(scene_iou)
+    }
+    
+    # Create aligned scenes for compatibility
+    aligned_gt_scene = trimesh.Scene(gt_meshes)
+    aligned_pred_scene = trimesh.Scene(aligned_pred_meshes)
+    
+    # Store aligned scenes for later use
+    metrics['aligned_gt_scene'] = aligned_gt_scene
+    metrics['aligned_pred_scene'] = aligned_pred_scene
+    
+    # Create merged meshes for compatibility
+    if len(gt_meshes) > 1:
+        metrics['aligned_gt_merged'] = trimesh.util.concatenate(gt_meshes)
+    else:
+        metrics['aligned_gt_merged'] = gt_meshes[0] if gt_meshes else None
+    
+    if len(aligned_pred_meshes) > 1:
+        metrics['aligned_pred_merged'] = aligned_pred_meshes[0] if aligned_pred_meshes else None
+    else:
+        metrics['aligned_pred_merged'] = aligned_pred_meshes[0] if aligned_pred_meshes else None
+    
+    # Calculate B-IoU and F-score statistics
+    if per_object_b_ious:
+        scene_b_iou = np.mean(per_object_b_ious)
+        scene_b_iou_std = np.std(per_object_b_ious)
+    else:
+        scene_b_iou = 0.0
+        scene_b_iou_std = 0.0
+    
+    if per_object_fscores:
+        scene_fscore = np.mean(per_object_fscores)
+        scene_fscore_std = np.std(per_object_fscores)
+    else:
+        scene_fscore = 0.0
+        scene_fscore_std = 0.0
+    
+    # Add B-IoU and F-score to metrics dictionary
+    metrics['b_iou'] = float(scene_b_iou)
+    metrics['b_iou_std'] = float(scene_b_iou_std)
+    metrics['f_score'] = float(scene_fscore)
+    metrics['f_score_std'] = float(scene_fscore_std)
+    
+    print(f"Final scene metrics (messy kitchen): CD={metrics['chamfer_distance']:.6f}±{metrics['chamfer_distance_std']:.6f}, "
+          f"IoU={metrics['iou']:.6f}±{metrics['iou_std']:.6f}, B-IoU={metrics['b_iou']:.6f}±{metrics['b_iou_std']:.6f}, "
+          f"F-score={metrics['f_score']:.6f}±{metrics['f_score_std']:.6f}")
+    
+    return metrics
+
+def compute_bounding_box_iou(mesh1, mesh2):
+    """
+    Compute Bounding-box IoU (B-IoU) between two meshes.
+    
+    B-IoU measures the overlap between the bounding boxes of two meshes,
+    which is useful for evaluating spatial alignment and coverage.
+    
+    Args:
+        mesh1 (trimesh.Trimesh): First mesh
+        mesh2 (trimesh.Trimesh): Second mesh
+        
+    Returns:
+        float: Bounding-box IoU value between 0 and 1
+    """
+    try:
+        # Get bounding boxes of both meshes
+        bbox1 = mesh1.bounds  # Shape: (2, 3) - (min_coords, max_coords)
+        bbox2 = mesh2.bounds
+        
+        # Calculate intersection bounds
+        intersection_min = np.maximum(bbox1[0], bbox2[0])
+        intersection_max = np.minimum(bbox1[1], bbox2[1])
+        
+        # Check if there's an intersection
+        if np.any(intersection_min > intersection_max):
+            return 0.0
+        
+        # Calculate intersection volume
+        intersection_dims = intersection_max - intersection_min
+        intersection_volume = np.prod(intersection_dims)
+        
+        # Calculate individual volumes
+        bbox1_dims = bbox1[1] - bbox1[0]
+        bbox2_dims = bbox2[1] - bbox2[0]
+        bbox1_volume = np.prod(bbox1_dims)
+        bbox2_volume = np.prod(bbox2_dims)
+        
+        # Calculate union volume
+        union_volume = bbox1_volume + bbox2_volume - intersection_volume
+        
+        # Calculate B-IoU
+        b_iou = intersection_volume / union_volume if union_volume > 0 else 0.0
+        
+        return float(b_iou)
+        
+    except Exception as e:
+        print(f"Error computing B-IoU: {e}")
+        return 0.0
+
+
+# def compute_chamfer_and_iou_messy_kitchen(target_mesh, completed_mesh):
+#     """Compute Chamfer distance and IoU between target mesh and completed mesh for messy kitchen scenarios.
+    
+#     This function directly uses the input meshes without any normalization.
+    
+#     Args:
+#         target_mesh (trimesh.Trimesh): Ground truth target mesh
+#         completed_mesh (trimesh.Trimesh): Completed mesh
+        
+#     Returns:
+#         tuple: (chamfer_distance, iou)
+#     """
+#     # Sample points from mesh surfaces for Chamfer distance
+#     gt_points, _ = trimesh.sample.sample_surface(target_mesh, 2048)
+#     completed_points, _ = trimesh.sample.sample_surface(completed_mesh, 2048)
+    
+#     evaluator = MeshEvaluator(n_points=2048)
+    
+#     # Compute Chamfer distance
+#     eval_dict = evaluator.eval_pointcloud(
+#         pointcloud=completed_points,
+#         pointcloud_tgt=gt_points,
+#         normals=None,
+#         normals_tgt=None
+#     )
+#     chamfer_distance = eval_dict['chamfer-L1']
+#     # fscore = eval_dict['fscore']
+    
+#     # Sample points for IoU calculation
+#     points_iou, occ_target = sample_iou_points(
+#         mesh_list=[target_mesh],
+#         bounds=target_mesh.bounds,
+#         num_point=100000,
+#         uniform=False,
+#         size=1.0
+#     )
+    
+#     # Compute IoU
+#     metrics = evaluator.eval_mesh(
+#         mesh=completed_mesh,
+#         pointcloud_tgt=gt_points,
+#         normals_tgt=None,
+#         points_iou=points_iou,
+#         occ_tgt=occ_target,
+#         remove_wall=False
+#     )
+#     iou = metrics['iou']
+    
+#     return chamfer_distance, iou

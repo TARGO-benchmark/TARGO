@@ -2,9 +2,9 @@ import logging
 import numpy as np
 import trimesh
 # from scipy.spatial import cKDTree
-from vgn.ConvONets.utils.libkdtree import KDTree
-from vgn.ConvONets.utils.libmesh import check_mesh_contains
-from vgn.ConvONets.common import compute_iou
+from src.vgn.ConvONets.utils.libkdtree import KDTree
+from src.vgn.ConvONets.utils.libmesh import check_mesh_contains
+from src.vgn.ConvONets.common import compute_iou
 
 # Maximum values for bounding box [-0.5, 0.5]^3
 EMPTY_PCL_DICT = {

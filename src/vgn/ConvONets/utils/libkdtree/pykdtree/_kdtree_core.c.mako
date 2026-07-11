@@ -195,10 +195,10 @@ int partition_${DTYPE}(${DTYPE} *pa, uint32_t *pidx, int8_t no_dims, uint32_t st
     if (min_val >= max_val)
         return 1;
 
-    /* Use middle for splitting */
+    /* Use medium for splitting */
     split = (min_val + max_val) / 2;
 
-    /* Partition all data points around middle */
+    /* Partition all data points around medium */
     p = start_idx;
     q = end_idx;
     while (p <= q)

@@ -4,10 +4,10 @@ import torch.utils.data
 from pathlib import Path
 from collections import OrderedDict
 
-from vgn.io import *
-from vgn.perception import *
-from vgn.utils.transform import Rotation, Transform
-from vgn.utils.implicit import get_scene_from_mesh_pose_list, sample_iou_points, check_mesh_contains
+from src.vgn.io import *
+from src.vgn.perception import *
+from src.vgn.utils.transform import Rotation, Transform
+from src.vgn.utils.implicit import get_scene_from_mesh_pose_list, sample_iou_points, check_mesh_contains
 
 class DatasetVoxelOccGeo(torch.utils.data.Dataset):
     def __init__(self, root, raw_root, num_point_occ=2048, augment=False):

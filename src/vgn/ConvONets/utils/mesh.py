@@ -1,7 +1,7 @@
 from scipy.spatial import Delaunay
 from itertools import combinations
 import numpy as np
-from vgn.ConvONets.utils import voxels
+from src.vgn.ConvONets.utils import voxels
 
 
 class MultiGridExtractor(object):
