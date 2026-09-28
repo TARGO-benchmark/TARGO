@@ -3,7 +3,7 @@ import trimesh
 import numpy as np
 from urdfpy import URDF
 try:
-    from src.vgn.ConvONets.utils.libmesh.inside_mesh import check_mesh_contains
+    from vgn.ConvONets.utils.libmesh.inside_mesh import check_mesh_contains
 except:
     print('import libmesh failed!')
 

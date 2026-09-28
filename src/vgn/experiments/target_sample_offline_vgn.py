@@ -15,22 +15,20 @@ import torch
 import random
 from datetime import datetime
 import sys
-from src.utils_giga import filter_and_pad_point_clouds
+from utils_giga import filter_and_pad_point_clouds
 # import trimesh
-sys.path.append('.')
-# sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.vgn import io  # For CSV creation and I/O
-from src.vgn.grasp import *
-from src.vgn.ConvONets.eval import MeshEvaluator
-from src.vgn.simulation import ClutterRemovalSim
-from src.vgn.utils.transform import Rotation, Transform
-from src.vgn.utils.implicit import (
+from vgn import io  # For CSV creation and I/O
+from vgn.grasp import *
+from vgn.ConvONets.eval import MeshEvaluator
+from vgn.simulation import ClutterRemovalSim
+from vgn.utils.transform import Rotation, Transform
+from vgn.utils.implicit import (
     get_mesh_pose_list_from_world,
     get_scene_from_mesh_pose_list
 )
-from src.vgn.perception import camera_on_sphere
+from vgn.perception import camera_on_sphere
 # Debug / logging utilities
-from src.utils_targo import (
+from utils_targo import (
     record_occ_level_count,
     record_occ_level_success,
     cal_occ_level_sr,
@@ -39,7 +37,7 @@ from src.utils_targo import (
     compute_chamfer_and_iou,
     save_open3d_mesh
 )
-from src.vgn.utils_visualization import visualize_failure_case
+from vgn.utils_visualization import visualize_failure_case
 
 skip_list = {
     "013_apple",
@@ -59,7 +57,7 @@ State = collections.namedtuple("State", ["tsdf", "pc"])
 
 def _tsdf_grid_to_mesh(tsdf_grid):
     """Convert a TSDF grid to a non-empty trimesh, handling both local APIs."""
-    from src.utils_targo import tsdf_to_mesh
+    from utils_targo import tsdf_to_mesh
 
     mesh_or_tuple = tsdf_to_mesh(tsdf_grid)
     if isinstance(mesh_or_tuple, trimesh.Trimesh):
@@ -316,8 +314,6 @@ def run(
             if obj_id == tgt_id:
                 body.set_color(link_index=-1, rgba_color=(1.0, 0.0, 0.0, 1.0))
                 targ_name = urdf_path.split('/')[-1].split('.')[0]
-                vgn_object_category_dict = json.load(open('./data//targo_category/vgn_objects_category_full.json'))
-                target_category = vgn_object_category_dict[targ_name]
                 target_mesh_gt = tri_mesh
 
         end_time = time.time()
@@ -443,7 +439,7 @@ def run(
             qual_vol, rot_vol, width_vol = grasp_plan_fn(state, scene_mesh)
 
             # Convert volumes to grasps
-            from src.vgn.detection_implicit_vgn import select, bound
+            from vgn.detection_implicit_vgn import select, bound
             qual_vol = bound(qual_vol, state.tsdf.voxel_size)
             
             # Create position grid for grasp selection
@@ -475,14 +471,8 @@ def run(
             completion_mesh = None
             
             # First, try to get completed_target_mesh from visual_dict (preferred method)
-            print(f"Debug: visual_dict is not None: {visual_dict is not None}")
-            if visual_dict:
-                print(f"Debug: visual_dict keys: {list(visual_dict.keys())}")
             if visual_dict and 'completed_target_mesh' in visual_dict:
                 completion_mesh = visual_dict['completed_target_mesh']
-                print(f"Using completed_target_mesh from visual_dict")
-            else:
-                print(f"Debug: completed_target_mesh not found in visual_dict")
             
             # Fallback: convert from complete_targ_grid if available
             if (completion_mesh is None and model_type == 'targo' and 
@@ -513,7 +503,7 @@ def run(
                 # Calculate and save CD and IoU metrics
                 if target_mesh_gt is not None:
                     try:
-                        from src.utils_targo import compute_chamfer_and_iou
+                        from utils_targo import compute_chamfer_and_iou
                         
                         # Calculate CD and IoU
                         cd, iou = compute_chamfer_and_iou(target_mesh_gt, completion_mesh)
@@ -559,7 +549,7 @@ def run(
             # visual_mesh = None  # TARGO doesn't return visual mesh
             
             # Add RGB rendering (similar to reference file)
-            from src.vgn.perception import camera_on_sphere
+            from vgn.perception import camera_on_sphere
             origin = Transform(Rotation.identity(), np.r_[sim.size / 2, sim.size / 2, sim.size / 3])
             r = 2 * sim.size
             theta = np.pi / 3.0
@@ -577,7 +567,7 @@ def run(
                 qual_vol, rot_vol, width_vol = grasp_plan_fn(state, scene_mesh)
 
                 # Convert volumes to grasps
-                from src.vgn.detection_implicit_vgn import select, bound
+                from vgn.detection_implicit_vgn import select, bound
                 qual_vol = bound(qual_vol, state.tsdf.voxel_size)
                 
                 # Create position grid for grasp selection
@@ -612,7 +602,7 @@ def run(
                             # Calculate CD and IoU metrics
                             if target_mesh_gt is not None:
                                 try:
-                                    from src.utils_targo import compute_chamfer_and_iou
+                                    from utils_targo import compute_chamfer_and_iou
                                     
                                     # Calculate CD and IoU
                                     cd, iou = compute_chamfer_and_iou(target_mesh_gt, completion_mesh)
@@ -851,7 +841,7 @@ def run(
             else:
                 # Create affordance mesh from grasp planning results
                 try:
-                    from src.vgn.utils_visualization import create_affordance_mesh
+                    from vgn.utils_visualization import create_affordance_mesh
                     affordance_mesh = create_affordance_mesh(state, grasp_plan_fn, model_type)
                 except Exception as affordance_error:
                     print(f"Error creating affordance mesh for {scene_name}: {affordance_error}")
@@ -1438,7 +1428,7 @@ def generate_targo_input_data(sim, path_to_npz, tgt_id, scene_name, processed_sc
         if use_sam and sam_predictor is not None:
             try:
                 # Generate RGB image for SAM
-                from src.vgn.perception import camera_on_sphere
+                from vgn.perception import camera_on_sphere
                 origin = Transform(Rotation.identity(), np.r_[sim.size / 2, sim.size / 2, sim.size / 3])
                 r = 2 * sim.size
                 theta = np.pi / 3.0
@@ -1460,7 +1450,7 @@ def generate_targo_input_data(sim, path_to_npz, tgt_id, scene_name, processed_sc
             print(f"Using ground truth segmentation for scene {scene_name}")
         
         # Generate point clouds for target and scene using reconstruct_40_pc
-        from src.vgn.perception import (
+        from vgn.perception import (
             reconstruct_40_pc, 
             depth_to_point_cloud, 
             depth_to_point_cloud_no_specify,
@@ -1504,7 +1494,7 @@ def generate_targo_input_data(sim, path_to_npz, tgt_id, scene_name, processed_sc
         # print(f"Generated TSDF from completed target point cloud. TSDF shape: {targ_grid.shape}")
             
 
-        from src.vgn.perception import create_tsdf
+        from vgn.perception import create_tsdf
         tsdf_targ = create_tsdf(sim.size, 40, (depth_imgs * mask_targ).astype(np.float32), sim.camera.intrinsic, extrinsics)
         targ_grid = tsdf_targ.get_grid()
         print(f"Generated TSDF from completed target point cloud. TSDF shape: {targ_grid.shape}")

@@ -1,4 +1,6 @@
 import time
+from pathlib import Path
+
 import numpy as np
 import trimesh
 from scipy import ndimage
@@ -8,17 +10,19 @@ import re
 import argparse
 import open3d as o3d
 
-from src.vgn.grasp import *
-from src.vgn.utils.transform import Transform, Rotation
-from src.vgn.networks import load_network
-from src.vgn.utils import visual
-from src.utils_giga import *
-from src.vgn.grasp_conversion import anygrasp_to_vgn, fgc_to_vgn, anygrasp_to_vgn_with_region_filter, fgc_to_vgn_with_region_filter
+from vgn.grasp import *
+from vgn.utils.transform import Transform, Rotation
+from vgn.networks import load_network
+from vgn.utils import visual
+from utils_giga import *
+from vgn.grasp_conversion import anygrasp_to_vgn, fgc_to_vgn, anygrasp_to_vgn_with_region_filter, fgc_to_vgn_with_region_filter
 
-from src.utils_giga import tsdf_to_ply, point_cloud_to_tsdf, save_numpy_as_ply, mesh_to_tsdf, point_cloud_to_mesh
-from src.utils_targo import tsdf_to_mesh, filter_grasps_by_target
+from utils_giga import tsdf_to_ply, point_cloud_to_tsdf, save_numpy_as_ply, mesh_to_tsdf, point_cloud_to_mesh
+from utils_targo import tsdf_to_mesh, filter_grasps_by_target
 
 LOW_TH = 0.0
+# AdaPoinTr configuration shipped with the repository (resolved relative to this file).
+SHAPE_COMPLETION_CONFIG = Path(__file__).resolve().parents[1] / "shape_completion" / "configs" / "AdaPoinTr.yaml"
 
 def vis_grasps_target(target_gg, target_cloud, scene_cloud, anygrasp=False, fgc=False, output_prefix=None):
     """Visualize grasps for target object"""
@@ -148,11 +152,11 @@ class VGNImplicit(object):
         # Load shape completion network for TARGO models (only for targo model type)
         if model_type == 'targo' and sc_model_path:
             try:
-                from src.shape_completion.models.AdaPoinTr import AdaPoinTr
-                from src.shape_completion.config import cfg_from_yaml_file
-                from src.shape_completion import builder
+                from shape_completion.models.AdaPoinTr import AdaPoinTr
+                from shape_completion.config import cfg_from_yaml_file
+                from shape_completion import builder
                 
-                sc_cfg = cfg_from_yaml_file("src/shape_completion/configs/AdaPoinTr.yaml")
+                sc_cfg = cfg_from_yaml_file(str(SHAPE_COMPLETION_CONFIG))
                 sc_net = AdaPoinTr(sc_cfg.model)
                 builder.load_model(sc_net, sc_model_path)
                 sc_net = sc_net.eval()
@@ -217,8 +221,9 @@ class VGNImplicit(object):
             scene_no_targ_pc = np.concatenate((scene_no_targ_pc, self.plane), axis=0)
 
             if state.type == 'targo':
+                # Without a shape completion network the partial target point cloud is used as is.
+                targ_pc = state.targ_pc
                 if self.sc_net is not None:
-                    targ_pc = state.targ_pc
                     print(f"Applying shape completion network to target point cloud with {len(targ_pc)} points")
                     try:
                         # Ensure sc_net is on the same device as input
@@ -245,10 +250,6 @@ class VGNImplicit(object):
                         # Add completed target mesh to visualization results
                         if visual_dict is not None:
                             visual_dict['completed_target_mesh'] = complete_targ_mesh
-                            print(f"Added completed target mesh to visualization results")
-                            print(f"Debug: visual_dict keys after adding: {list(visual_dict.keys())}")
-                        else:
-                            print(f"Debug: visual_dict is None, cannot add completed_target_mesh")
                         
                         if self.visualize:
                             save_numpy_as_ply(targ_pc, 'targ_pc.ply')
@@ -264,7 +265,7 @@ class VGNImplicit(object):
                 inputs = (scene_no_targ_pc, targ_pc)
             
             elif state.type == 'targo_partial':
-                # targo_partial: 使用原始的 targ_pc，不使用 shape completion
+                # targo_partial: use the partial target point cloud as is (no shape completion)
                 targ_pc = state.targ_pc
                 targ_pc_tensor = torch.from_numpy(targ_pc).float().unsqueeze(0).to(self.device)
                 targ_pc_tensor = filter_and_pad_point_clouds(targ_pc_tensor)
@@ -274,22 +275,23 @@ class VGNImplicit(object):
                 inputs = (scene_no_targ_pc, targ_pc)
                 
             elif state.type == 'targo_full_gt':
-                # targo_full_gt: 从 target_mesh_gt 采样点云，生成完整的 target grid
+                # targo_full_gt: sample the ground-truth target mesh and build the complete target grid
                 # if hasattr(state, 'target_mesh_gt') and state.target_mesh_gt is not None:
                 try:
                     print("Sampling points from ground truth target mesh")
-                    # 从 mesh 采样点云
+                    # Sample a point cloud from the mesh
                     targ_pc_world, _ = trimesh.sample.sample_surface(target_mesh_gt, 2048)
-                    # 转换到 [-0.5, 0.5] 空间
+                    # Normalise to the [-0.5, 0.5] cube
                     targ_pc = (targ_pc_world / 0.3) - 0.5
                     
-                    # 生成完整的 target grid
+                    # Build the complete target grid
                     complete_targ_grid_gt = mesh_to_tsdf(target_mesh_gt)
                     state.complete_targ_grid_gt = complete_targ_grid_gt
                     
                     print(f"Generated complete target point cloud with {len(targ_pc)} points from ground truth mesh")
-                    save_numpy_as_ply(targ_pc, 'targ_pc_gt.ply')
-                    save_numpy_as_ply(scene_no_targ_pc, 'scene_no_targ_pc_gt.ply')
+                    if self.visualize:
+                        save_numpy_as_ply(targ_pc, 'targ_pc_gt.ply')
+                        save_numpy_as_ply(scene_no_targ_pc, 'scene_no_targ_pc_gt.ply')
                 
                 except Exception as e:
                     print(f"Error sampling points from ground truth target mesh: {e}")

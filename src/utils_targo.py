@@ -6,17 +6,17 @@ import trimesh
 import numpy as np
 import json
 import h5py
-from src.vgn.utils import visual
-from src.vgn.ConvONets.eval import MeshEvaluator
+from vgn.utils import visual
+from vgn.ConvONets.eval import MeshEvaluator
 from collections import OrderedDict
 # Load and parse URDF files
 from urdfpy import URDF
 from torch import nn
 # from src.vgn.simulation import ClutterRemovalSim
-from src.vgn.utils.implicit import *
+from vgn.utils.implicit import *
 # from src.vgn.simulation import ClutterRemovalSim
-from src.vgn.perception import *
-from src.vgn.utils.transform import Rotation, Transform
+from vgn.perception import *
+from vgn.utils.transform import Rotation, Transform
 # from src.vgn.utils.misc import apply_noise, apply_translational_noise
 # from acronym_tools import load_mesh, create_gripper_marker
 # from src.vgn.simulation import ClutterRemovalSim
@@ -1985,7 +1985,7 @@ def collect_mesh_pose_dict(sim, exclude_plane=False):
         _, _, _, scale, mesh_path, _, _, _ = visuals[0]
         mesh_path = mesh_path.decode('utf8')
         if mesh_path == '':
-            mesh_path = os.path.join('/home/ding/ran-gr/GraspInClutter/data/urdfs/pile/train', name + '.urdf')
+            mesh_path = os.path.join(str(getattr(sim, 'urdf_root', 'data/urdfs')), getattr(sim, 'object_set', 'packed/train'), name + '.urdf')
         mesh_pose_dict[uid] = (mesh_path, scale, pose)
     return mesh_pose_dict
 
@@ -2006,7 +2006,7 @@ def collect_mesh_pose_list(sim, exclude_plane=False):
         _, _, _, scale, mesh_path, _, _, _ = visuals[0]
         mesh_path = mesh_path.decode('utf8')
         if mesh_path == '':
-            mesh_path = os.path.join('/home/ding/ran-gr/GraspInClutter/data/urdfs/pile/train', name + '.urdf')
+            mesh_path = os.path.join(str(getattr(sim, 'urdf_root', 'data/urdfs')), getattr(sim, 'object_set', 'packed/train'), name + '.urdf')
         mesh_pose_list.append((mesh_path, scale, pose))
     return mesh_pose_list
 
@@ -2350,196 +2350,6 @@ def load_splits(root_folder):
         split_dict[category]['train'] = [obj_p.replace('.json', '.h5') for obj_p in splits['train']]
         split_dict[category]['test'] = [obj_p.replace('.json', '.h5') for obj_p in splits['test']]
     return split_dict
-
-
-
-# class SceneInfo:
-# # Function: __init__
-#     def __init__(self, grasp_paths, obj_transforms, obj_scales, obj_num, targ_idc, pairwise_scene_objects_idcs, pairwise_scene_idcs,
-#                  cluttered_scene_filtered_grasps, 
-#                  single_object_grasps_no_scene, 
-#                  single_object_grasps_scene,
-#                 pairwise_scene_filtered_grasps,
-#                 cluttered_occ_level,
-#                 pairwise_occ_level,
-#                 supp_obj_path, supp_pose, supp_scale,
-#                 # table_dims, table_support, table_pose, lower_table,
-#                 depth_cluttered, depth_single, depth_pairwise_list,camera_pose
-                
-#                 ):
-
-#         self.grasp_paths = grasp_paths
-#         self.obj_transforms = obj_transforms
-#         self.obj_scales = obj_scales
-#         self.obj_num = obj_num
-#         self.targ_idc = targ_idc
-#         self.pairwise_scene_objects_idcs = pairwise_scene_objects_idcs
-#         self.pairwise_scene_idcs = pairwise_scene_idcs
-#         self.cluttered_scene_filtered_grasps = cluttered_scene_filtered_grasps
-#         self.single_object_grasps_no_scene = single_object_grasps_no_scene
-#         self.single_object_grasps_scene = single_object_grasps_scene
-#         self.pairwise_scene_filtered_grasps = pairwise_scene_filtered_grasps
-#         self.cluttered_occ_level = cluttered_occ_level
-#         self.pairwise_occ_level = pairwise_occ_level
-
-
-#         # self._table_dims = [0.5, 0.6, 0.6]
-#         # self._table_support = [0.6, 0.6, 0.6]
-#         # self._table_pose = np.eye(4)
-#         # self._lower_table = 0.02
-        
-#         # self._table_dims = table_dims
-#         # self._table_support = table_support
-#         # self._table_pose = table_pose
-#         # self._lower_table = lower_table
-        
-        
-#         # self._table_pose[2, 3] -= self._lower_table
-#         # self.table_mesh = trimesh.creation.box(self._table_dims)
-#         # self.table_mesh.apply_transform(self._table_pose)
-#         # self.table_support = trimesh.creation.box(self._table_support)
-#         # self.table_support.apply_transform(self._table_pose)
-
-#         self.depth_cluttered = depth_cluttered
-#         self.depth_single = depth_single
-#         self.depth_pairwise_list = depth_pairwise_list
-#         self.camera_pose = camera_pose
-
-#         self._objects = OrderedDict()
-#         self._poses = OrderedDict()
-
-#         plane_mesh = trimesh.load(supp_obj_path.replace('.urdf', '.obj'))
-#         plane_mesh.apply_scale(supp_scale)
-    
-#         self._objects['plane'] = plane_mesh
-#         self._poses['plane'] = supp_pose
-        
-#         for i in range(self.obj_num):
-#             self._objects[self.grasp_paths[i]] = load_mesh(os.path.join('/mnt/hdd/GraspInClutter/acronym', 'grasps', self.grasp_paths[i]), '/mnt/hdd/GraspInClutter/acronym')
-#             mesh_mean =  np.mean(self._objects[self.grasp_paths[i]].vertices, 0, keepdims=True)
-#             self._objects[self.grasp_paths[i]].vertices -= mesh_mean    ## make the objects centroid at the origin
-#             self._poses[self.grasp_paths[i]] = self.obj_transforms[i] 
-        
-# # Function: scene_info_as_trimesh_scene
-#     def scene_info_as_trimesh_scene(self, targ_idc, obj_idcs):
-#         """Return trimesh scene representation.
-
-#         Returns:
-#             trimesh.Scene: Scene representation.
-#         """
-#         trimesh_scene = trimesh.scene.Scene()
-#         obj_count = 0
-#         for obj_id, obj_mesh in self._objects.items():
-#             if obj_count in obj_idcs:
-#                 if obj_id == 'table':
-#                     obj_mesh.visual.vertex_colors = [128, 128, 128, 255]    ## grey
-#                     trimesh_scene.add_geometry(
-#                         obj_mesh,
-#                         node_name=obj_id,
-#                         geom_name=obj_id,
-#                         transform=self._poses[obj_id],
-#                     )
-#                 if obj_count == targ_idc  and obj_count != 0:
-#                     obj_mesh.visual.vertex_colors = [255, 0, 0, 255] ## red
-#                     trimesh_scene.add_geometry(
-#                         obj_mesh,
-#                         node_name=obj_id,
-#                         geom_name=obj_id,
-#                         transform=self._poses[obj_id],
-#                     )
-#                 if obj_count != targ_idc and obj_id != 'table':
-#                     obj_mesh.visual.vertex_colors = [0, 0, 255, 255]    ## blue
-#                     trimesh_scene.add_geometry(
-#                         obj_mesh,
-#                         node_name=obj_id,
-#                         geom_name=obj_id,
-#                         transform=self._poses[obj_id],
-#                     )
-#             obj_count += 1
-            
-#         return trimesh_scene
-    
-# # Function: save_to_hdf5
-#     def save_to_hdf5(self, file_name):
-#         with h5py.File(file_name, 'w') as f:
-#             # Strings and arrays need special treatment
-#             # string_dt = h5py.special_dtype(vlen=str)
-#             # f.create_dataset("obj_paths", (len(self.obj_paths),), dtype=string_dt, data=self.obj_paths)
-#             f.create_dataset("grasp_paths", data = [n.encode("ascii", "ignore") for n in self.grasp_paths])
-#             f.create_dataset("obj_transforms", data=self.obj_transforms)
-#             f.create_dataset("obj_scales", data=self.obj_scales)
-#             f.create_dataset("obj_num", data=self.obj_num)
-#             f.create_dataset("targ_idc", data=self.targ_idc)
-#             f.create_dataset("pairwise_scene_objects_idcs", data=self.pairwise_scene_objects_idcs)
-#             f.create_dataset("cluttered_scene_filtered_grasps", data=self.cluttered_scene_filtered_grasps)
-            
-#             f.create_dataset("single_object_grasps_no_scene", data=self.single_object_grasps_no_scene)
-
-#             f.create_dataset("single_object_grasps_scene", data=self.single_object_grasps_scene)
-
-#             # f.create_dataset("fail_idcs",data= self.fail_idcs)
-
-#             f.create_dataset("pairwise_scene_filtered_grasps", data=self.pairwise_scene_filtered_grasps)
-
-#             # f.create_dataset("fail_ratio", data=self.fail_ratio)
-#             f.create_dataset("pairwise_scene_idcs",data= self.pairwise_scene_idcs)
-
-
-#             f.create_dataset("cluttered_occ_level",data= self.cluttered_occ_level)
-#             f.create_dataset("pairwise_occ_level",data= self.pairwise_occ_level)
-
-#             f.create_dataset("depth_cluttered", data =self.depth_cluttered )
-#             f.create_dataset("depth_single", data =self.depth_single )
-#             f.create_dataset("depth_pairwise_list", data =self.depth_pairwise_list )
-#             f.create_dataset("camera_pose", data =self.camera_pose )
-
-    
-# # Function: visualize_SceneInfo
-#     def visualize_SceneInfo(self):
-#         print("1")
-#         env_scene = trimesh.scene.Scene()
-#         base_dir = '/mnt/hdd/GraspInClutter/acronym'
-#         # print(self.obj_transforms)
-#         # print(self.grasp_paths)
-
-#         env_scene.add_geometry(
-#                         self.table_mesh,
-#                         node_name = 'table',
-#                         geom_name = 'table',
-#                         transform=self._table_pose,
-#                     )
-        
-#         obj_count = 0
-#         for i in range(self.obj_num):
-#             # Load mesh from the object path
-#             mesh = load_mesh(os.path.join('/mnt/hdd/GraspInClutter/acronym', 'grasps', self.grasp_paths[i]), '/mnt/hdd/GraspInClutter/acronym')
-            
-#             if obj_count != self.targ_idc:
-#                 mesh.visual.vertex_colors = [0, 0, 255, 255]
-#                 env_scene.add_geometry(
-#                             mesh,
-#                             node_name = self.grasp_paths[i],
-#                             geom_name =self.grasp_paths[i] ,
-#                             transform=self.obj_transforms[i],
-#                         )
-            
-#             elif obj_count == self.targ_idc:
-#                 mesh.visual.vertex_colors = [255, 0, 0, 255]
-#                 env_scene.add_geometry(
-#                             mesh,
-#                             node_name = self.grasp_paths[i],
-#                             geom_name =self.grasp_paths[i] ,
-#                             transform=self.obj_transforms[i],
-#                         )
-#             obj_count += 1
-
-#         env_scene = self.scene_info_as_trimesh_scene(self.targ_idc+1, range(self.obj_num + 1))
-#         env_scene.show()
-#         cluttered_scene = trimesh.scene.scene.append_scenes([env_scene,create_grippers_scene(self.cluttered_scene_filtered_grasps) ])
-#         cluttered_scene.show()
-#         print("1")
-
-
 def mesh_to_occupancy(mesh: trimesh.Trimesh, 
                      resolution: int = 64, 
                      bounds: tuple = None) -> np.ndarray:

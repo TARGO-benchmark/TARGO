@@ -9,6 +9,29 @@ from vgn.perception import *
 from vgn.utils.transform import Rotation, Transform
 
 
+_SCENE_INDEX_CACHE = {}
+
+
+def scene_file_path(root, scene_id, subdir="scenes"):
+    """Return the .npz file of ``scene_id`` below ``<root>/<subdir>``.
+
+    Local datasets store ``<root>/<subdir>/<scene_id>.npz``. The Hugging Face copy of the
+    training set is sharded into numbered sub-directories (``<root>/<subdir>/000/<scene_id>.npz``).
+    The sharded layout is indexed once per process so both layouts work without renaming files.
+    """
+    root = Path(root)
+    flat = root / subdir / f"{scene_id}.npz"
+    if flat.exists():
+        return flat
+    key = (str(root), subdir)
+    index = _SCENE_INDEX_CACHE.get(key)
+    if index is None:
+        index = {path.stem: path for path in (root / subdir).glob("*/*.npz")}
+        _SCENE_INDEX_CACHE[key] = index
+    return index.get(scene_id, flat)
+
+
+
 def write_setup(root, size, intrinsic, max_opening_width, finger_depth):
     path = root / "setup.json"
     if path.exists():
@@ -33,26 +56,26 @@ def read_setup(root):
 
 def write_sensor_data(root, depth_imgs, extrinsics):
     scene_id = uuid.uuid4().hex
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     assert not path.exists()
     np.savez_compressed(path, depth_imgs=depth_imgs, extrinsics=extrinsics)
     return scene_id
 
 def write_raw_sensor_data(root, scene_id, depth_imgs, extrinsics, seg, depth_imgs_side, extrinsics_side, seg_side, mesh_pose_dict, pc_part, tgt_id):
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     assert not path.exists()
     np.savez_compressed(path, depth_imgs=depth_imgs, extrinsics=extrinsics, seg=seg, depth_imgs_side=depth_imgs_side, extrinsics_side=extrinsics_side, seg_side=seg_side, mesh_pose_dict=mesh_pose_dict, pc_part=pc_part, tgt_id=tgt_id)
     return scene_id
 
 def write_sensor_data_TSDF(root, depth_imgs, extrinsics, tsdf_grid):
     scene_id = uuid.uuid4().hex
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     assert not path.exists()
     np.savez_compressed(path, depth_imgs=depth_imgs, extrinsics=extrinsics, tsdf_grid=tsdf_grid)
     return scene_id
 
 def write_other_sensor_data(root, scene_id, depth_imgs, extrinsics, mask_targ,  mask_occ=None, segmentation_map = None,grid_scene = None, grid_targ = None, pc_scene = None, pc_targ=None, occ_targ=None, complete_target_tsdf=None, complete_target_pc=None):
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     assert not path.exists()
     if '_c_' in scene_id:
         np.savez_compressed(path, depth_imgs=depth_imgs, extrinsics=extrinsics, mask_targ=mask_targ, mask_occ = mask_occ,\
@@ -68,7 +91,7 @@ def write_clutter_sensor_data(root, scene_id, depth_imgs, extrinsics, mask_targ,
                                segmentation_map = None,grid_scene = None, grid_targ = None,\
                                   pc_depth_scene = None, pc_depth_targ = None, pc_depth_scene_no_targ = None,
                                   pc_scene = None, pc_targ=None, pc_scene_no_targ = None, occ_targ=None):
-    path = root / 'scenes' / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     assert not path.exists()
     assert '_c_' in scene_id, 'scene_id should have _c_ in it'
     np.savez_compressed(path, depth_imgs=depth_imgs, extrinsics=extrinsics, mask_targ=mask_targ,mask_scene=mask_scene, \
@@ -79,7 +102,7 @@ def write_clutter_sensor_data(root, scene_id, depth_imgs, extrinsics, mask_targ,
 def write_single_scene_data(root, scene_id, depth_imgs, extrinsics, mask_targ,  grid_scene = None, grid_targ = None,\
                              pc_depth_scene = None, pc_depth_targ = None,
                              pc_scene = None, pc_targ=None, occ_targ=None, complete_target_tsdf=None, complete_target_pc=None):
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     assert not path.exists()
     assert '_s_' in scene_id, 'scene_id should have _s_ in it'
     np.savez_compressed(path, depth_imgs=depth_imgs, extrinsics=extrinsics,
@@ -88,7 +111,7 @@ def write_single_scene_data(root, scene_id, depth_imgs, extrinsics, mask_targ,  
                 pc_scene = pc_scene,pc_targ = pc_targ,occ_targ=occ_targ, complete_target_tsdf = complete_target_tsdf, complete_target_pc = complete_target_pc)
 
 def write_double_scene_data(root, scene_id, depth_imgs, extrinsics, mask_targ, grid_scene = None, grid_targ = None, pc_scene = None, pc_targ=None, occ_targ=None):
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     assert not path.exists()
     assert '_d_' in scene_id, 'scene_id should have _d_ in it'
     np.savez_compressed(path, depth_imgs=depth_imgs, extrinsics=extrinsics, mask_targ=mask_targ,\
@@ -102,16 +125,16 @@ def write_full_sensor_data(root, scene_id, depth_imgs, extrinsics, segmentation)
     return scene_id
 
 def read_set_theory_sensor_data(root, scene_id):
-    data = np.load(root / "scenes" / (scene_id + ".npz"), allow_pickle=True)
+    data = np.load(scene_file_path(root, scene_id), allow_pickle=True)
     return data["depth_imgs"], data["extrinsics"], data["mask_targ"]
 
 
 def read_set_theory_occluder_sensor_data(root, scene_id):
-    data = np.load(root / "scenes" / (scene_id + ".npz"), allow_pickle=True)
+    data = np.load(scene_file_path(root, scene_id), allow_pickle=True)
     return data["depth_imgs"], data["extrinsics"], data["mask_targ"], data["mask_occ"]
 
 def read_sensor_data(root, scene_id):
-    data = np.load(root / "scenes" / (scene_id + ".npz"), allow_pickle=True)
+    data = np.load(scene_file_path(root, scene_id), allow_pickle=True)
     return data["depth_imgs"], data["extrinsics"]
 
 def read_full_sensor_data(root, scene_id):
@@ -175,22 +198,22 @@ def write_df_filtered(df, root):
     df.to_csv(root / "grasps_cropped.csv", index=False)
 
 def write_set_theory_voxel_grid(root, scene_id, voxel_grid, target_mask_grid):
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     np.savez_compressed(path, grid=voxel_grid, mask = target_mask_grid)
 
 def write_set_theory_occluder_voxel_grid(root, scene_id, voxel_grid, target_mask_grid, occ_mask_grid):
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     np.savez_compressed(path, grid=voxel_grid, targ_mask = target_mask_grid, occ_mask = occ_mask_grid)
 
 def write_voxel_grid(root, scene_id, voxel_grid):
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     np.savez_compressed(path, grid=voxel_grid)
 
 
 def write_scene_targ_pc(root, scene_id, scene_pc, targ_pc, name="point_clouds"):
     path = root / name / (scene_id + ".npz")
     # point_cloud = np.array(point_cloud, dtype=object)
-    # path = root / "scenes" / (scene_id + ".npz")
+    # path = scene_file_path(root, scene_id)
     scene_pc = np.array(scene_pc, dtype=object)
     targ_pc = np.array(targ_pc, dtype=object)
     np.savez_compressed(path, scene_pc=scene_pc, targ_pc=targ_pc)
@@ -206,13 +229,13 @@ def write_test_set_point_cloud(root, scene_id, point_cloud, name="test_set"):
     np.savez_compressed(path, pc=point_cloud)
 
 def read_voxel_grid(root, scene_id):
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     return np.load(path, allow_pickle=True)["grid"]
 
 def read_targ_depth_pc(root, scene_id):
     # path = root / "point_clouds" / (scene_id + ".npz")
     # path = root / "depth_pc" / (scene_id + ".npz")
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     # targ_pc = np.load(path)["targ_pc"]
     # targ_pc = np.load(path)["targ_pc.npy"]
     # targ_pc = np.load(path, allow_pickle=True)["targ_pc"]
@@ -223,7 +246,7 @@ def read_targ_depth_pc(root, scene_id):
 def read_scene_depth_pc(root, scene_id):
     # path = root / "point_clouds" / (scene_id + ".npz")
     # path = root / "depth_pc" / (scene_id + ".npz")
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     # targ_pc = np.load(path)["targ_pc"]
     # targ_pc = np.load(path)["targ_pc.npy"]
     # scene_pc = np.load(path, allow_pickle=True)["scene_pc"]
@@ -232,7 +255,7 @@ def read_scene_depth_pc(root, scene_id):
 
 # def read_targ_pc(root, scene_id):
 #     # path = root / "point_clouds" / (scene_id + ".npz")
-#     path = root / "scenes" / (scene_id + ".npz")
+#     path = scene_file_path(root, scene_id)
 #     # targ_pc = np.load(path)["targ_pc"]
 #     # targ_pc = np.load(path)["targ_pc.npy"]
 #     # targ_pc = np.load(path, allow_pickle=True)["targ_pc"]
@@ -249,7 +272,7 @@ def read_targ_pc(root, scene_id):
     """
     from pathlib import Path
 
-    path = Path(root) / "scenes" / f"{scene_id}.npz"
+    path = scene_file_path(root, scene_id)
     invalid_file = "./scripts/invalid_scene_id.txt"
 
     try:
@@ -265,7 +288,7 @@ def read_scene_no_targ_pc(root, scene_id):
     # path = root / "point_clouds" / (scene_id + ".npz")
     # path = root / "scene_no_targ_pc" / (scene_id + ".npz")
     # targ_pc = np.load(path)["targ_pc"]
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     # targ_pc = np.load(path)["targ_pc.npy"]
     # scene_pc = np.load(path, allow_pickle=True)["scene_pc"]
     
@@ -323,7 +346,7 @@ def read_scene_no_targ_pc(root, scene_id):
 
 def read_scene_pc(root, scene_id):
     # path = root / "point_clouds" / (scene_id + ".npz")
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     # targ_pc = np.load(path)["targ_pc"]
     # targ_pc = np.load(path)["targ_pc.npy"]
     # scene_pc = np.load(path, allow_pickle=True)["scene_pc"]
@@ -332,20 +355,20 @@ def read_scene_pc(root, scene_id):
 
 
 def read_voxel_grid_set_theory(root, scene_id):
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     depth_imgs = np.load(path)["depth_imgs.npy"]
     extrinsics = np.load(path)["extrinsics.npy"]
     mask_targ =  np.load(path)["mask_targ.npy"]
     return depth_imgs, mask_targ, extrinsics
 
 def read_voxel_and_mask(root, scene_id):
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     depth_imgs = np.load(path)["grid.npy"]
     mask_targ =  np.load(path)["mask.npy"]
     return depth_imgs, mask_targ
 
 def read_voxel_and_mask_occluder(root, scene_id):
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     # depth_img = np.load(path)["grid"]
     # mask_targ =  np.load(path)["targ_mask"]
     # mask_occ = np.load(path)["occ_mask"]
@@ -376,14 +399,14 @@ def read_voxel_and_mask_occluder(root, scene_id):
         return None, None
 
 def read_depth_mask(root, scene_id):
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     depth_img = np.load(path)["depth_imgs.npy"]
     mask_targ =  np.load(path)["mask_targ.npy"]
     return depth_img, mask_targ
     # return depth_img, mask_targ, mask_occ
 
 def read_single_complete_target(root, scene_id):
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     targ_grid = np.load(path)["complete_target_tsdf"]
     targ_pc = np.load(path)["complete_target_pc"]
     return targ_grid, targ_pc
@@ -421,7 +444,7 @@ def append_csv(path, *args):
 
 def read_complete_target_pc(root, scene_id):
     """Read complete target point cloud from preprocessed data."""
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     try:
         data = np.load(path, allow_pickle=True)
         if 'complete_target_pc' in data:
@@ -433,7 +456,7 @@ def read_complete_target_pc(root, scene_id):
 
 def read_complete_target_mesh(root, scene_id):
     """Read complete target mesh from preprocessed data."""
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     try:
         data = np.load(path, allow_pickle=True)
         if 'complete_target_mesh_vertices' in data and 'complete_target_mesh_faces' in data:
@@ -449,7 +472,7 @@ def read_complete_target_mesh(root, scene_id):
 
 def check_complete_target_available(root, scene_id):
     """Check if complete target data is available for a scene."""
-    path = root / "scenes" / (scene_id + ".npz")
+    path = scene_file_path(root, scene_id)
     try:
         data = np.load(path, allow_pickle=True)
         return 'complete_target_pc' in data

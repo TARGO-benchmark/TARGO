@@ -2,8 +2,8 @@ import torch
 import MinkowskiEngine as ME
 from typing import List, Any, Dict
 from torchtyping import TensorType
-from src.transformer.me_transformer_utils import PositionEmbeddingLearned, create_quantized_sparse_tensor
-from src.transformer.transformer_fushion import TransformerFusion
+from transformer.me_transformer_utils import PositionEmbeddingLearned, create_quantized_sparse_tensor
+from transformer.transformer_fushion import TransformerFusion
 from torch import nn
 import copy
 import numpy as np

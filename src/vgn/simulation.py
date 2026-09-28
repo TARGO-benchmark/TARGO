@@ -8,14 +8,14 @@ import open3d as o3d
 import gzip
 import matplotlib.pyplot as plt
 from typing import Union
-from src.utils_targo import points_equal, collect_mesh_pose_dict, find_urdf, get_pc_scene_no_targ_kdtree
-from src.vgn.grasp import Label
-from src.vgn.perception import TSDFVolume, CameraIntrinsic, create_tsdf, camera_on_sphere
-from src.vgn.utils import btsim, workspace_lines
-from src.utils_targo import save_point_cloud_as_ply
-from src.vgn.utils.transform import Rotation, Transform
+from utils_targo import points_equal, collect_mesh_pose_dict, find_urdf, get_pc_scene_no_targ_kdtree
+from vgn.grasp import Label
+from vgn.perception import TSDFVolume, CameraIntrinsic, create_tsdf, camera_on_sphere
+from vgn.utils import btsim, workspace_lines
+from utils_targo import save_point_cloud_as_ply
+from vgn.utils.transform import Rotation, Transform
 import pathlib
-from src.utils_giga import point_cloud_to_tsdf, mesh_to_tsdf
+from utils_giga import point_cloud_to_tsdf, mesh_to_tsdf
 import random
 import trimesh
 import trimesh.transformations as tra

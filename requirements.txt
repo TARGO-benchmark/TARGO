@@ -1,31 +1,36 @@
+# Install PyTorch first with the build matching your CUDA driver (see README).
+torch
+torchvision
 numpy
-Cython
 scipy
 pandas
 matplotlib
-torch
-torchvision
-pytorch-ignite
-tensorboard
-tqdm
-trimesh
-urdfpy
-pybullet==2.7.9
-open3d
-h5py
-huggingface_hub
-scikit-image
-scikit-learn
-pykdtree
-pyrender
-pycollada
-plyfile
+Pillow
 PyYAML
 easydict
+tqdm
+tensorboard
+pytorch-ignite
 timm
 einops
 linear_attention_transformer
-catkin_pkg
-rospkg
-empy
+torchtyping
+trimesh
+urdfpy
+pybullet
+open3d
+pyrender
+h5py
+scikit-image
+PyMCubes
+pysdf
+transforms3d
+opencv-python
+huggingface_hub
+Cython
 wandb
+# Not pip-installable from PyPI for every CUDA version, see README:
+#   torch-scatter, MinkowskiEngine
+
+# Optional, only needed for non-default modes: clip (CLIP-conditioned variants),
+#   graspnetAPI (AnyGrasp / FGC baselines), segment_anything (SAM segmentation), pymeshfix (mesh repair)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run TARGO inference on the VGN evaluation set."""
+"""Evaluate a TARGO-Net checkpoint on the TARGO synthetic test set (VGN format) in PyBullet."""
 
 import argparse
 import json
@@ -8,21 +8,22 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "src" / "shape_completion" / "chamfer_dist"))
-sys.path.insert(0, str(ROOT / "src" / "shape_completion" / "pointnet2_ops"))
-
-for build_dir in (
-    ROOT / "src" / "shape_completion" / "chamfer_dist" / "build",
-    ROOT / "src" / "shape_completion" / "pointnet2_ops" / "build",
+# Make the repository importable without installation. The two extension directories
+# expose the in-place builds of the chamfer and pointnet2_ops CUDA extensions.
+for _path in (
+    ROOT,
+    ROOT / "src",
+    ROOT / "src" / "shape_completion" / "chamfer_dist",
+    ROOT / "src" / "shape_completion" / "pointnet2_ops",
 ):
-    if build_dir.exists():
-        for lib_dir in build_dir.iterdir():
-            if lib_dir.is_dir():
-                sys.path.insert(0, str(lib_dir))
+    sys.path.insert(0, str(_path))
+
+DEFAULT_TEST_ROOT = "data/test_set_gaussian_0.005"
+DEFAULT_RESULT_ROOT = "eval_results"
+DEFAULT_TARGET_FILE = "example_targets/target_list.txt"
+URDF_ROOT = Path("data/urdfs")
+
 
 def str2bool(value):
     if isinstance(value, bool):
@@ -33,15 +34,6 @@ def str2bool(value):
     if lowered in {"no", "false", "f", "n", "0"}:
         return False
     raise argparse.ArgumentTypeError("Boolean value expected.")
-
-
-def default_paths():
-    root = "data/nips_data_version6/test_set_gaussian_0.002"
-    return {
-        "test_root": root,
-        "result_root": "targo_eval_results/vgn/eval_results/targo",
-        "target_file": "example_targets/target_list.txt",
-    }
 
 
 def make_result_path(result_root, model_type):
@@ -57,44 +49,46 @@ def write_args(result_path, args):
             handle.write(f"{key}: {value}\n")
 
 
-def run_inference(args):
-    defaults = default_paths()
-    args.test_root = args.test_root or defaults["test_root"]
-    args.occ_level_dict = args.occ_level_dict or str(Path(args.test_root) / "occ_level_dict.json")
-    args.result_root = args.result_root or defaults["result_root"]
-    args.target_file = args.target_file or defaults["target_file"]
-    args.logdir = args.logdir or args.result_root
-
+def check_inputs(args):
     if not Path(args.model).exists():
-        raise FileNotFoundError(f"Model checkpoint not found: {args.model}")
-
-    test_root = Path(args.test_root)
-    required_dataset_paths = [
-        test_root,
-        test_root / "scenes",
-        test_root / "mesh_pose_dict",
-        Path(args.occ_level_dict),
-    ]
-    missing_dataset_paths = [path for path in required_dataset_paths if not path.exists()]
-    if missing_dataset_paths:
-        missing = "\n".join(f"  - {path}" for path in missing_dataset_paths)
         raise FileNotFoundError(
-            "VGN inference dataset is missing. The clean code is runnable, but it needs "
-            "the processed VGN test scenes.\n"
-            f"Missing paths:\n{missing}\n"
-            "Pass a valid VGN dataset with --test_root, or extract/copy the processed "
-            "dataset so this default exists: data/nips_data_version6/test_set_gaussian_0.002\n"
-            "Do not pass a literal placeholder path like /path/to/test_set_gaussian_0.002.\n"
-            "Dataset references:\n"
-            "  - TARGO: https://targo-benchmark.github.io/\n"
-            "  - GIGA: https://github.com/UT-Austin-RPL/GIGA"
+            f"Model checkpoint not found: {args.model} (see README, 'Download the assets')"
+        )
+    if args.shape_completion and not Path(args.sc_model_path).exists():
+        raise FileNotFoundError(
+            f"Shape completion checkpoint not found: {args.sc_model_path} (see README, 'Download the assets')"
         )
 
-    if args.shape_completion and not Path(args.sc_model_path).exists():
-        raise FileNotFoundError(f"Shape completion checkpoint not found: {args.sc_model_path}")
+    test_root = Path(args.test_root)
+    required = [test_root, test_root / "scenes", test_root / "mesh_pose_dict", Path(args.occ_level_dict)]
+    missing = [path for path in required if not path.exists()]
+    if missing:
+        listing = "\n".join(f"  - {path}" for path in missing)
+        raise FileNotFoundError(
+            "The evaluation set is incomplete. Missing paths:\n"
+            f"{listing}\n"
+            "Pass a processed test set with --test_root (see README, 'Download the assets'), "
+            "or try the bundled one-scene example: --test_root generated_min_test_set"
+        )
 
-    from src.vgn.detection_implicit_vgn import VGNImplicit
-    from src.vgn.experiments import target_sample_offline_vgn
+    if not URDF_ROOT.exists():
+        raise FileNotFoundError(
+            f"{URDF_ROOT} not found. The PyBullet simulation needs the object URDFs and meshes "
+            "(see README, 'Object models')."
+        )
+
+
+def run_inference(args):
+    args.test_root = args.test_root or DEFAULT_TEST_ROOT
+    args.occ_level_dict = args.occ_level_dict or str(Path(args.test_root) / "occ_level_dict.json")
+    args.result_root = args.result_root or DEFAULT_RESULT_ROOT
+    args.target_file = args.target_file or DEFAULT_TARGET_FILE
+    args.logdir = args.logdir or args.result_root
+    check_inputs(args)
+
+    # Imported late so that argument errors are reported before the heavy imports.
+    from vgn.detection_implicit_vgn import VGNImplicit
+    from vgn.experiments import target_sample_offline_vgn
 
     result_path = make_result_path(args.result_root, args.model_type)
     args.result_path = str(result_path)
@@ -153,32 +147,27 @@ def run_inference(args):
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", choices=["vgn"], default="vgn")
-    parser.add_argument("--model", type=Path, default=Path("checkpoints/targonet.pt"))
+    parser.add_argument("--dataset", choices=["vgn"], default="vgn", help="Evaluation data format")
+    parser.add_argument("--model", type=Path, default=Path("checkpoints/targonet.pt"), help="TARGO-Net checkpoint")
     parser.add_argument("--model_type", choices=["targo"], default="targo")
-    parser.add_argument("--shape_completion", type=str2bool, default=True)
-    parser.add_argument("--sc_model_path", type=Path, default=Path("checkpoints/adapointr.pth"))
-    parser.add_argument("--test_root", default="")
-    parser.add_argument("--occ_level_dict", default="")
-    parser.add_argument("--result_root", default="")
-    parser.add_argument("--logdir", default="")
+    parser.add_argument("--shape_completion", type=str2bool, default=True, help="Complete the target shape with AdaPoinTr before grasp prediction")
+    parser.add_argument("--sc_model_path", type=Path, default=Path("checkpoints/adapointr.pth"), help="AdaPoinTr checkpoint")
+    parser.add_argument("--test_root", default="", help=f"Processed test set root (default: {DEFAULT_TEST_ROOT})")
+    parser.add_argument("--occ_level_dict", default="", help="Occlusion level per scene (default: <test_root>/occ_level_dict.json)")
+    parser.add_argument("--result_root", default="", help=f"Where results are written (default: {DEFAULT_RESULT_ROOT})")
+    parser.add_argument("--logdir", default="", help="Where visualisation logs are written (default: same as --result_root)")
     parser.add_argument("--description", default="targo_inference")
     parser.add_argument("--scene", choices=["pile", "packed"], default="packed")
-    parser.add_argument("--object-set", dest="object_set", default="packed/train")
-    parser.add_argument("--target-file", dest="target_file", default="")
+    parser.add_argument("--object-set", dest="object_set", default="packed/train", help="Object set below data/urdfs")
+    parser.add_argument("--target-file", dest="target_file", default="", help="Optional list of target names that get extra visualisations")
     parser.add_argument("--out_th", type=float, default=0.2)
     parser.add_argument("--qual-th", dest="qual_th", type=float, default=0.9)
     parser.add_argument("--best", type=str2bool, default=True)
     parser.add_argument("--force", type=str2bool, default=True)
-    parser.add_argument(
-        "--max_scenes",
-        type=int,
-        default=0,
-        help="Maximum number of scenes to evaluate. Use 0, the default, to traverse all scenes.",
-    )
+    parser.add_argument("--max_scenes", type=int, default=0, help="Maximum number of scenes to evaluate; 0 evaluates all scenes")
     parser.add_argument("--sim-gui", dest="sim_gui", type=str2bool, default=False)
     parser.add_argument("--sideview", type=str2bool, default=True)
-    parser.add_argument("--vis", type=str2bool, default=False)
+    parser.add_argument("--vis", type=str2bool, default=False, help="Export scene, grasp and completion visualisations")
     parser.add_argument("--video-recording", dest="video_recording", type=str2bool, default=False)
     parser.add_argument("--vis_failure_only", type=str2bool, default=False)
     parser.add_argument("--vis_rgb", type=str2bool, default=False)
@@ -189,6 +178,7 @@ def parse_args():
 
 
 if __name__ == "__main__":
+    # All data, checkpoint and output paths are relative to the repository root.
     os.chdir(ROOT)
     try:
         run_inference(parse_args())

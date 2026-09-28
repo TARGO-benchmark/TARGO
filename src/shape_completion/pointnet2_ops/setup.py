@@ -14,8 +14,8 @@ _ext_headers = glob.glob(osp.join(_ext_src_root, "include", "*"))
 
 exec(open(osp.join("pointnet2_ops", "_version.py")).read())
 
-# ✅ Add support for your GPU (P5000: compute capability 6.1)
-os.environ["TORCH_CUDA_ARCH_LIST"] = "6.1 7.0 7.5 8.0 8.6"
+# Default CUDA architectures; override with the TORCH_CUDA_ARCH_LIST environment variable.
+os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "6.1 7.0 7.5 8.0 8.6")
 
 setup(
     name="pointnet2_ops",

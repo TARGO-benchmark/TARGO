@@ -3,29 +3,37 @@ __pycache__/
 *.py[cod]
 *.so
 *.egg-info/
+*.egg
 .pytest_cache/
+.local/
 
-# Local environments
+# Environments
 .venv/
 venv/
 env/
 
-# Generated data and outputs
+# Data, checkpoints and run outputs (see README for download instructions)
+data
 data/
-data_scenes/
 checkpoints/
-checkpoints_gaussian/
-outputs/
-results/
+*.pt
+*.pth
+eval_results/
 targo_eval_results/
+repro_logs/
+repro_results/
 train_logs/
 train_logs_*/
+outputs/
+results/
 visualization/
+demo/
 wandb/
 tmp/
 tmp_mesh/
+*.log
 
-# Large geometry/media artifacts
+# Large geometry / media artifacts
 *.glb
 *.obj
 *.ply
@@ -38,4 +46,3 @@ tmp_mesh/
 # Build artifacts
 build/
 dist/
-*.egg

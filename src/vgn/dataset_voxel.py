@@ -17,19 +17,15 @@ import trimesh
 import uuid
 import shutil
 import matplotlib.pyplot as plt
-import clip
 from datetime import datetime
-from sys import path
-path.append('.')
-
-from src.vgn.io import *
-from src.vgn.perception import *
-from src.vgn.utils.transform import Rotation, Transform
-from src.vgn.utils.implicit import get_scene_from_mesh_pose_list
-from utils_giga import *
 
 from vgn.io import *
+from vgn.io import scene_file_path
 from vgn.perception import *
+from vgn.utils.transform import Rotation, Transform
+from vgn.utils.implicit import get_scene_from_mesh_pose_list
+from utils_giga import *
+
 from vgn.utils.transform import Rotation, Transform
 from vgn.utils.implicit import get_scene_from_mesh_pose_list
 import re
@@ -56,6 +52,8 @@ def get_clip_model():
     global _clip_model, _clip_preprocess, _clip_device
     
     if _clip_model is None:
+        import clip  # optional dependency, only needed for the CLIP-conditioned variants
+
         _clip_device = "cuda" if torch.cuda.is_available() else "cpu"
         _clip_model, _clip_preprocess = clip.load("ViT-B/32", device=_clip_device)
         print(f"CLIP model loaded on {_clip_device}")
@@ -64,6 +62,8 @@ def get_clip_model():
 
 def extract_clip_features(text_prompt, model, device):
     """Extract CLIP features for a given text prompt."""
+    import clip  # optional dependency, only needed for the CLIP-conditioned variants
+
     text_inputs = torch.cat([clip.tokenize(text_prompt)]).to(device)
     with torch.no_grad():
         text_features = model.encode_text(text_inputs)
@@ -80,8 +80,9 @@ def transform_pc(pc):
     return points_curr_transformed['input']
 
 # Global error log file for recording problematic scene_ids
-ERROR_LOG_FILE_TARGO_FULL = Path("./data/_check_results/full_train/dataset_error_scenes_targo_full.txt")
-ERROR_LOG_FILE_PTV3_SCENE = Path("./data/_check_results/full_train/dataset_error_scenes_ptv3_scene.txt")
+# Scene ids that fail to load are appended here (kept outside the dataset directory).
+ERROR_LOG_FILE_TARGO_FULL = Path("./train_logs_targo/dataset_errors/dataset_error_scenes_targo_full.txt")
+ERROR_LOG_FILE_PTV3_SCENE = Path("./train_logs_targo/dataset_errors/dataset_error_scenes_ptv3_scene.txt")
 
 def safe_specify_num_points(points, target_size, scene_id, point_type="unknown"):
     """
@@ -302,7 +303,7 @@ class DatasetVoxel_Target(torch.utils.data.Dataset):
 
             elif self.use_complete_targ:
                 # Read complete target data directly from current scene file
-                scene_single_path = self.raw_root / "scenes" / f"{single_scene_id}.npz"
+                scene_single_path = scene_file_path(self.raw_root, single_scene_id)
                 # miss_log = Path("./miss_complete_target_tsdf.txt")
 
                 # try:
@@ -312,7 +313,7 @@ class DatasetVoxel_Target(torch.utils.data.Dataset):
                 #     miss_log.parent.mkdir(parents=True, exist_ok=True)
                 #     with miss_log.open("a", encoding="utf-8") as f:
                 #         f.write(f"{scene_id}\n")
-                #     # 出错的话，跳过当前循环
+                #     # On error, skip this sample
                 #     print(f"Warning: skip scene {scene_id} (missing complete_target_tsdf): {e}")
                     # return None
             
@@ -560,10 +561,10 @@ class DatasetVoxel_PTV3_Clip(torch.utils.data.Dataset):
                 voxel_grid, targ_grid = read_voxel_and_mask_occluder(self.raw_root, scene_id)
                 occluder_grid = voxel_grid - targ_grid
                 targ_pc = read_complete_target_pc(self.raw_root, scene_id).astype(np.float32)
-                scene_path = self.raw_root / "scenes" / f"{scene_id}.npz"
+                scene_path = scene_file_path(self.raw_root, scene_id)
                 
                 # Handle missing complete_target_tsdf with error logging and fallback
-                scene_single_path = self.raw_root / "scenes" / f"{single_scene_id}.npz"
+                scene_single_path = scene_file_path(self.raw_root, single_scene_id)
                 try:
                     # with np.load(scene_single_path, allow_pickle=True) as data_single:
                         # targ_grid = data_single["complete_target_tsdf"]
@@ -826,10 +827,10 @@ class DatasetVoxel_PTV3_Scene(torch.utils.data.Dataset):
         voxel_grid, targ_grid = read_voxel_and_mask_occluder(self.raw_root, scene_id)
         occluder_grid = voxel_grid - targ_grid
         targ_pc = read_complete_target_pc(self.raw_root, scene_id).astype(np.float32)
-        scene_path = self.raw_root / "scenes" / f"{scene_id}.npz"
+        scene_path = scene_file_path(self.raw_root, scene_id)
         
         # Handle missing complete_target_tsdf with error logging and fallback
-        scene_single_path = self.raw_root / "scenes" / f"{single_scene_id}.npz"
+        scene_single_path = scene_file_path(self.raw_root, single_scene_id)
         try:
             # with np.load(scene_single_path, allow_pickle=True) as data_single:
                 # targ_grid = data_single["complete_target_tsdf"]

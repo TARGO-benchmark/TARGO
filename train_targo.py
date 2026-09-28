@@ -6,28 +6,28 @@ This script trains the original TARGO model using AdaPoinTr for shape completion
 """
 
 import argparse
-from pathlib import Path
 import os
+import shutil
 import sys
+from pathlib import Path
+
 import numpy as np
+
+# Compatibility shims for dependencies that still use the removed NumPy aliases.
 np.int = int
 np.bool = bool
 from datetime import datetime
 
 ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "src" / "shape_completion" / "chamfer_dist"))
-sys.path.insert(0, str(ROOT / "src" / "shape_completion" / "pointnet2_ops"))
-
-for build_dir in (
-    ROOT / "src" / "shape_completion" / "chamfer_dist" / "build",
-    ROOT / "src" / "shape_completion" / "pointnet2_ops" / "build",
+# Make the repository importable without installation. The two extension directories
+# expose the in-place builds of the chamfer and pointnet2_ops CUDA extensions.
+for _path in (
+    ROOT,
+    ROOT / "src",
+    ROOT / "src" / "shape_completion" / "chamfer_dist",
+    ROOT / "src" / "shape_completion" / "pointnet2_ops",
 ):
-    if build_dir.exists():
-        for lib_dir in build_dir.iterdir():
-            if lib_dir.is_dir():
-                sys.path.insert(0, str(lib_dir))
+    sys.path.insert(0, str(_path))
 
 from torch.utils.data import DataLoader, Subset, random_split
 from ignite.engine import Engine, Events
@@ -120,6 +120,13 @@ def main(args):
 
     init_wandb(args)
 
+    # Validation runs the same planner as inference_targo.py, including shape completion when available.
+    validation_sc_model_path = None
+    if args.shape_completion and Path(args.sc_model_checkpoint).exists():
+        validation_sc_model_path = str(args.sc_model_checkpoint)
+    elif args.shape_completion:
+        print(f"Warning: {args.sc_model_checkpoint} not found; validation runs without shape completion.")
+
     if args.savedir == '':
         # create log directory
         time_stamp = datetime.now().strftime("%y-%m-%d-%H-%M")
@@ -206,11 +213,14 @@ def main(args):
     @trainer.on(Events.EPOCH_COMPLETED)
     def log_validation_results(engine):
         print("Starting validation grasp evaluation...")
-        vgn_success_rate = perform_validation_grasp_evaluation(net, device, logdir, engine.state.epoch)
+        vgn_success_rate = perform_validation_grasp_evaluation(
+            net, device, logdir, engine.state.epoch, args.val_root, args.val_max_scenes,
+            sc_model_path=validation_sc_model_path,
+        )
         avg_success_rate = vgn_success_rate
         
-        # If validation failed completely (returned 0.0 for average), use a dummy metric based on training loss
-        if avg_success_rate == 0.0:
+        # If the validation could not run, fall back to a proxy metric based on the training accuracy
+        if avg_success_rate is None:
             # Use a simple heuristic: higher accuracy should correlate with better success rate
             # This is just a fallback to ensure wandb gets some validation metric
             train_accuracy = getattr(engine.state, 'metrics', {}).get('accuracy', 0.0)
@@ -273,7 +283,7 @@ def main(args):
     if WANDB_AVAILABLE and args.use_wandb:
         wandb.finish()
 
-def perform_validation_grasp_evaluation(net, device, logdir, epoch):
+def perform_validation_grasp_evaluation(net, device, logdir, epoch, val_root, val_max_scenes=50, sc_model_path=None):
     """
     Perform a VGN-format grasp evaluation on a small validation subset.
     """
@@ -281,8 +291,8 @@ def perform_validation_grasp_evaluation(net, device, logdir, epoch):
     import shutil
     import tempfile
 
-    from src.vgn.detection_implicit_vgn import VGNImplicit
-    from src.vgn.experiments import target_sample_offline_vgn
+    from vgn.detection_implicit_vgn import VGNImplicit
+    from vgn.experiments import target_sample_offline_vgn
     
     print(f"Starting VGN validation evaluation for epoch {epoch}")
     
@@ -301,6 +311,7 @@ def perform_validation_grasp_evaluation(net, device, logdir, epoch):
             out_th=0.5,
             select_top=False,
             visualize=False,
+            sc_model_path=sc_model_path,
             cd_iou_measure=True,
         )
         print("Created VGN grasp planner for validation.")
@@ -313,14 +324,14 @@ def perform_validation_grasp_evaluation(net, device, logdir, epoch):
         print(f"Validation result directory: {vgn_result_dir}")
         
         # Check if validation datasets exist
-        vgn_test_root = 'data/nips_data_version6/test_set_gaussian_0.002'
+        vgn_test_root = str(val_root)
         occ_level_dict = f'{vgn_test_root}/occ_level_dict.json'
 
-        vgn_success_rate = 0.0
+        vgn_success_rate = None  # None: the validation could not run
 
         if os.path.exists(vgn_test_root):
             try:
-                print("Running VGN validation on up to 50 scenes...")
+                print(f"Running VGN validation on up to {val_max_scenes} scenes...")
                 vgn_result = target_sample_offline_vgn.run(
                     grasp_plan_fn=grasp_planner,
                     logdir=logdir / f"validation_epoch_{epoch}" / "vgn",
@@ -338,7 +349,7 @@ def perform_validation_grasp_evaluation(net, device, logdir, epoch):
                     model_type='targo',
                     video_recording=False,
                     target_file_path=None,
-                    max_scenes=50,
+                    max_scenes=val_max_scenes,
                     sc_net=getattr(grasp_planner, "sc_net", None),
                     vis_failure_only=False,
                     vis_rgb=False,
@@ -360,7 +371,10 @@ def perform_validation_grasp_evaluation(net, device, logdir, epoch):
         else:
             print(f"[WARNING] VGN test root does not exist: {vgn_test_root}")
             
-        print(f"Final VGN validation success rate: {vgn_success_rate:.4f}")
+        if vgn_success_rate is None:
+            print("Final VGN validation success rate: unavailable")
+        else:
+            print(f"Final VGN validation success rate: {vgn_success_rate:.4f}")
         
         # Clean up temporary files
         shutil.rmtree(temp_result_dir, ignore_errors=True)
@@ -371,16 +385,32 @@ def perform_validation_grasp_evaluation(net, device, logdir, epoch):
         print(f"[ERROR] Error during validation evaluation: {e}")
         import traceback
         traceback.print_exc()
-        return 0.0
+        return None
     finally:
         # Clean up temporary model file
         if os.path.exists(temp_model_path):
             os.remove(temp_model_path)
 
+def ensure_setup_file(dataset_root):
+    """Provide setup.json for datasets distributed without it (e.g. the Hugging Face copy of syn_train)."""
+    setup_file = Path(dataset_root) / "setup.json"
+    if setup_file.exists():
+        return
+    default_setup = ROOT / "setup" / "setup.json"
+    try:
+        shutil.copy(default_setup, setup_file)
+        print(f"{setup_file} was missing; copied the default TARGO/VGN setup from {default_setup}")
+    except OSError as exc:
+        raise FileNotFoundError(
+            f"{setup_file} is missing and could not be created ({exc}). Copy {default_setup} into the dataset root."
+        ) from exc
+
+
 def create_train_val_loaders(root, root_raw, batch_size, val_split, augment, complete_shape, targ_grasp, set_theory, ablation_dataset, data_contain, decouple, use_complete_targ, model_type, input_points, shape_completion, vis_data, logdir, kwargs):
     # Load the main training dataset
     print(f"Loading training dataset from {root}")
     print(f"Raw dataset path: {root_raw}")
+    ensure_setup_file(root_raw)
     print(f"Parameters: model_type={model_type}, data_contain={data_contain}, shape_completion={shape_completion}")
     
     try:
@@ -555,10 +585,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train original TARGO model with shape completion")
     parser.add_argument("--net", default="targo", choices=["targo"], 
                         help="Network type: targo (original TARGO architecture)")
-    parser.add_argument("--dataset", type=Path, default='./data/nips_data_version6/combined/targo_dataset')
+    parser.add_argument("--dataset", type=Path, default="data/syn_train", help="Training set root (grasps.csv, scenes/, mesh_pose_dict/)")
     parser.add_argument("--data_contain", type=str, default="pc and targ_grid", help="Data content specification")
     parser.add_argument("--decouple", type=str2bool, default=False, help="Decouple flag")
-    parser.add_argument("--dataset_raw", type=Path, default='./data/nips_data_version6/combined/targo_dataset')
+    parser.add_argument("--dataset_raw", type=Path, default="data/syn_train", help="Raw scene root, normally the same as --dataset")
+    parser.add_argument("--val_root", type=Path, default="data/test_set_gaussian_0.005", help="Processed VGN-format scenes used for the per-epoch grasp validation")
+    parser.add_argument("--val_max_scenes", type=int, default=50, help="Number of validation scenes evaluated after every epoch")
     parser.add_argument("--logdir", type=Path, default="./train_logs_targo")
     parser.add_argument("--description", type=str, default="targo_with_shape_completion")
     parser.add_argument("--savedir", type=str, default="")

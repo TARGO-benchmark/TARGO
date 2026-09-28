@@ -4,7 +4,7 @@ import time
 import numpy as np
 import open3d as o3d
 
-from src.vgn.utils.transform import Transform
+from vgn.utils.transform import Transform
 
 
 class CameraIntrinsic(object):

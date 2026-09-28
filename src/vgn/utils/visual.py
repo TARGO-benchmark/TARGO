@@ -43,7 +43,7 @@ def affordance_visual_v3(qual_vol,
     cmap_name         : str
         Any Matplotlib colormap name (e.g. 'hot', 'coolwarm', 'jet').
     """
-    # --- 同 v2 ---
+    # --- same as v2 ---
     x = np.linspace(0, size, num=resolution)
     y = np.linspace(0, size, num=resolution)
     z = np.linspace(0, size, num=resolution)
@@ -88,11 +88,11 @@ def affordance_visual_v3(qual_vol,
         w = np.exp(a * temp)
         affordance = (w @ qual_pc[:, 3]) / (w.sum(axis=1) + 1e-8)
 
-    # --- 颜色（v3 改动处） ---------------------------------------------
+    # --- colours (changed in v3) --------------------------------------
     affordance = np.clip(affordance, th, 1.0)
     affordance = (affordance - th) / (1.0 - th)          # [0,1]
 
-    aff_norm   = affordance / (affordance.max() + 1e-8)  # 最高值 → 1
+    aff_norm   = affordance / (affordance.max() + 1e-8)  # maximum -> 1
     cmap       = plt.get_cmap(cmap_name)
     colors     = cmap(aff_norm)                          # RGBA ∈ [0,1]
     mesh.visual.face_colors = colors

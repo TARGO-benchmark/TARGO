@@ -2,7 +2,7 @@ import os
 import numpy as np
 import trimesh
 from datetime import datetime
-from src.vgn.utils.implicit import (
+from vgn.utils.implicit import (
     get_mesh_pose_list_from_world,
     get_scene_from_mesh_pose_list
 )
@@ -11,11 +11,11 @@ def visualize_failure_case(sim, scene_name, result_path, vis_rgb=False, grasp=No
                           model_type='targo', target_mesh_gt=None, scene_target_mesh_dict=None):
     """
     Visualize failure cases with comprehensive analysis:
-    1. Input Scene - 输入场景
-    2. GT Target - 真实目标物体  
-    3. Target Completion - 目标补全结果（仅对targo模型）
-    4. Affordance Visualization - 抓取可能性可视化
-    5. CD和IoU计算 - 仅对targo模型
+    1. Input scene
+    2. Ground-truth target object
+    3. Target shape completion result (targo model only)
+    4. Grasp affordance visualization
+    5. Chamfer distance and IoU metrics (targo model only)
     
     Args:
         sim: Simulation instance
@@ -82,8 +82,8 @@ def visualize_failure_case(sim, scene_name, result_path, vis_rgb=False, grasp=No
                 if hasattr(sim, 'camera') and sim.camera is not None:
                     try:
                         # Set up camera pose similar to acquire_single_tsdf_target_grid
-                        from src.vgn.utils.transform import Transform, Rotation
-                        from src.vgn.perception import camera_on_sphere
+                        from vgn.utils.transform import Transform, Rotation
+                        from vgn.perception import camera_on_sphere
                         
                         half_size = getattr(sim, 'size', 0.3) / 2
                         origin_yz = np.r_[half_size, half_size]
@@ -194,7 +194,7 @@ def visualize_failure_case(sim, scene_name, result_path, vis_rgb=False, grasp=No
         if model_type == 'targo' and state is not None:
             try:
                 # Generate completion using shape completion network
-                from src.vgn.utils_giga import mesh_to_tsdf, tsdf_to_mesh
+                from vgn.utils_giga import mesh_to_tsdf, tsdf_to_mesh
                 import torch
                 
                 # Get target point cloud from state
@@ -219,7 +219,7 @@ def visualize_failure_case(sim, scene_name, result_path, vis_rgb=False, grasp=No
                         # 5. Calculate CD and IoU for targo model
                         if target_mesh_gt is not None and completion_mesh is not None:
                             try:
-                                from src.vgn.utils_giga import compute_chamfer_distance, compute_iou
+                                from vgn.utils_giga import compute_chamfer_distance, compute_iou
                                 
                                 # Sample points from both meshes
                                 gt_points = target_mesh_gt.sample(2048)
@@ -254,7 +254,7 @@ def visualize_failure_case(sim, scene_name, result_path, vis_rgb=False, grasp=No
             
             try:
                 # Generate affordance visualization using the same method as detection_implicit_vgn.py
-                from src.vgn.utils import visual
+                from vgn.utils import visual
                 
                 # Create a mock grasp planner call to get the affordance volumes
                 if hasattr(grasp_plan_fn, '__call__'):
@@ -271,7 +271,7 @@ def visualize_failure_case(sim, scene_name, result_path, vis_rgb=False, grasp=No
                         # This mimics the logic from detection_implicit_vgn.py lines 378-380
                         if hasattr(grasp_plan_fn, 'net') and hasattr(grasp_plan_fn, 'pos'):
                             # Get affordance volumes by calling the network directly
-                            from src.vgn.detection_implicit_vgn import predict_targo
+                            from vgn.detection_implicit_vgn import predict_targo
                             
                             # Prepare inputs based on model type
                             if state.type in ['targo', 'targo_partial', 'targo_full_gt']:
